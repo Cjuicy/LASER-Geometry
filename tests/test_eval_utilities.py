@@ -1,3 +1,8 @@
+import os
+from pathlib import Path
+import subprocess
+import sys
+
 import numpy as np
 
 from eval.quick_vis_geometry import (
@@ -60,3 +65,23 @@ def test_load_traj_supports_kitti_pose_files(tmp_path):
     assert timestamps.tolist() == [0.0, 1.0]
     np.testing.assert_allclose(traj[0, :3], [0.0, 0.0, 0.0])
     np.testing.assert_allclose(traj[1, :3], [1.0, 0.0, 0.0])
+
+
+def test_quick_eval_local_runs_as_script_from_repo_root(tmp_path):
+    repo_root = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    env["MPLCONFIGDIR"] = str(tmp_path / "matplotlib")
+
+    result = subprocess.run(
+        [sys.executable, "eval/quick_eval_local.py", "--help"],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--pred" in result.stdout
+    assert "--gt" in result.stdout
