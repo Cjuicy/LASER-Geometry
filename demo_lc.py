@@ -3,6 +3,7 @@ import torch
 from pi3.models.pi3 import Pi3
 from inference_engine import StreamingWindowEngineLC
 from vggt.utils.load_fn import load_and_preprocess_images
+from utils.checkpoint import load_checkpoint_state_dict
 from utils.image_sequence import list_image_paths
 from eval.save_func import save_for_viser
 
@@ -67,8 +68,8 @@ def load_model(args):
     if args.model_ckpt:
         model = Pi3().to(device)
         print('Loading checkpoint: ', args.model_ckpt)
-        ckpt = torch.load(args.model_ckpt, map_location=device)
-        print(model.load_state_dict(ckpt['model'], strict=True))
+        ckpt = load_checkpoint_state_dict(args.model_ckpt, map_location=device)
+        print(model.load_state_dict(ckpt, strict=True))
         del ckpt
     else:
         model = Pi3.from_pretrained("yyfz233/Pi3").to(device)
