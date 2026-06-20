@@ -3,9 +3,9 @@ import torch
 from pi3.models.pi3 import Pi3
 from inference_engine import StreamingWindowEngine
 from utils.load_fn import load_and_preprocess_images
+from utils.image_sequence import list_image_paths
 from eval.save_func import save_for_viser
 
-import os
 import argparse
 from tqdm import tqdm
 
@@ -127,9 +127,7 @@ def run_dynamic_scene(args):
     data_path = args.data_path
     scene_name = data_path.split('/')[-1] if args.scene_name is None else args.scene_name
 
-    img_names = os.listdir(data_path)
-    img_names = [os.path.join(data_path, name) for name in img_names if name.endswith(('.png', '.jpg', '.jpeg'))][
-                ::args.sample_interval]
+    img_names = list_image_paths(data_path, sample_interval=args.sample_interval)
     print(f'Found {len(img_names)} images.')
     run_model(img_names, scene_name, args.output_path)
 
