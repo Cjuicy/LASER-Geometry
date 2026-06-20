@@ -36,9 +36,19 @@ def main():
     # English: Predicted trajectory format.
     parser.add_argument("--pred_format", default="tum")
 
+    # 中文：预测轨迹采样参数。
+    # English: Predicted trajectory sampling options.
+    parser.add_argument("--pred_skip", type=int, default=0)
+    parser.add_argument("--pred_stride", type=int, default=1)
+
     # 中文：GT 轨迹格式。
     # English: GT trajectory format.
     parser.add_argument("--gt_format", default="tum")
+
+    # 中文：GT 轨迹采样参数。KITTI 按 sample_interval 跑模型时，这里应使用相同 stride。
+    # English: GT trajectory sampling options. Use the demo sample_interval as GT stride for KITTI.
+    parser.add_argument("--gt_skip", type=int, default=0)
+    parser.add_argument("--gt_stride", type=int, default=1)
 
     # 中文：输出文件夹。
     # English: Output directory.
@@ -54,11 +64,21 @@ def main():
 
     # 中文：读取预测轨迹。
     # English: Load predicted trajectory.
-    pred_traj = load_traj(args.pred, traj_format=args.pred_format)
+    pred_traj = load_traj(
+        args.pred,
+        traj_format=args.pred_format,
+        skip=args.pred_skip,
+        stride=args.pred_stride,
+    )
 
     # 中文：读取 GT 轨迹。
     # English: Load GT trajectory.
-    gt_traj = load_traj(args.gt, traj_format=args.gt_format)
+    gt_traj = load_traj(
+        args.gt,
+        traj_format=args.gt_format,
+        skip=args.gt_skip,
+        stride=args.gt_stride,
+    )
 
     metric_file = os.path.join(args.out_dir, f"{args.seq}_metrics.txt")
     plot_file = os.path.join(args.out_dir, f"{args.seq}_trajectory.png")

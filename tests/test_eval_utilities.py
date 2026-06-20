@@ -85,3 +85,4 @@ def test_quick_eval_local_runs_as_script_from_repo_root(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "--pred" in result.stdout
     assert "--gt" in result.stdout
+    assert "--gt_stride" in result.stdout
