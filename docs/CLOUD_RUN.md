@@ -6,7 +6,7 @@ Place datasets and checkpoints on the cloud machine after cloning.
 ## Environment
 
 ```bash
-conda activate vggt-dem
+conda activate vggt
 pip install -r requirements.txt
 python setup.py build_ext --inplace
 ```
