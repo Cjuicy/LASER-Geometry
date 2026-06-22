@@ -15,7 +15,8 @@ from .inference_utils import (
 from .utils.geometry import (
     homogenize_points,
     apply_sim3_to_pose,
-    accumulate_sim3
+    accumulate_sim3,
+    register_camera_poses_kabsch_pytorch,
 )
 
 
@@ -102,12 +103,9 @@ class StreamingWindowEngineLC(StreamingWindowEngine):
                     conf_mask
                 )
 
-                working_window['sim3'] = s_d, R, t
-                # working_window['local_points'] = s_d * working_window.pop('local_points')
-                # working_window['camera_poses'] = apply_sim3_to_pose(working_window.pop('camera_poses'), s_d, R, t)
-
                 if self.depth_refine:
-                    tgt_pcd = working_window['local_points'].cpu().numpy()
+                    aligned_tgt_pcd = s_d * working_window['local_points']
+                    tgt_pcd = aligned_tgt_pcd.cpu().numpy()
 
                     tgt_sp_graph = make_sp_graph(
                         tgt_pcd[..., -1],
@@ -118,13 +116,30 @@ class StreamingWindowEngineLC(StreamingWindowEngine):
                         segment_mode=self.segment_mode,
                         normal_method=self.normal_method,
                     )
-                    working_window['scale_mask'] = refine_depth_segments(
+                    scale_mask = refine_depth_segments(
                         self.prev_window_cache['local_points'].cpu().numpy(),
                         tgt_pcd,
                         self.anchor_sp_graph,
                         tgt_sp_graph,
                         self.overlap
                     )
+                    s_d, R, t = self._refine_sim3_with_scale_mask(
+                        (s_d, R, t),
+                        scale_mask,
+                        working_window['camera_poses'][:self.overlap],
+                        self.prev_window_cache['camera_poses'][-self.overlap:],
+                        self.overlap,
+                    )
+                    scale_correction = self._scale_correction_from_mask(
+                        scale_mask,
+                        self.overlap,
+                        device=scale_mask.device,
+                        dtype=scale_mask.dtype,
+                    )
+                    if scale_correction is not None:
+                        scale_mask = scale_mask / scale_correction
+                    working_window['scale_mask'] = scale_mask
+                working_window['sim3'] = s_d, R, t
             else:
                 _, intrinsic_ = estimate_pseudo_depth_and_intrinsics(working_window['local_points'])
                 ref_intrinsic = intrinsic_[0]
@@ -158,6 +173,40 @@ class StreamingWindowEngineLC(StreamingWindowEngine):
             self.latencies.append(total_process_time)
 
     @staticmethod
+    def _scale_correction_from_mask(scale_mask, overlap, device=None, dtype=None):
+        scale_values = scale_mask[:overlap].reshape(-1)
+        scale_values = scale_values[torch.isfinite(scale_values) & (scale_values > 0)]
+        if scale_values.numel() == 0:
+            return None
+
+        scale_device = device if device is not None else scale_mask.device
+        scale_dtype = dtype if dtype is not None else scale_mask.dtype
+        return torch.median(scale_values).to(device=scale_device, dtype=scale_dtype)
+
+    @staticmethod
+    def _refine_sim3_with_scale_mask(sim3, scale_mask, source_camera_poses, target_camera_poses, overlap):
+        s_d, _, _ = sim3
+        scale_device = source_camera_poses.device
+        scale_dtype = source_camera_poses.dtype
+        scale_correction = StreamingWindowEngineLC._scale_correction_from_mask(
+            scale_mask,
+            overlap,
+            device=scale_device,
+            dtype=scale_dtype,
+        )
+        if scale_correction is None:
+            return sim3
+
+        s_d = torch.as_tensor(s_d, device=scale_device, dtype=scale_dtype)
+        refined_scale = s_d * scale_correction
+        R, t = register_camera_poses_kabsch_pytorch(
+            source_camera_poses,
+            target_camera_poses,
+            scale=refined_scale,
+        )
+        return refined_scale, R, t
+
+    @staticmethod
     def aggregate_caches(parsed_caches):
         aggregated_cache = defaultdict(list)
         ref_sim3 = (
@@ -170,7 +219,7 @@ class StreamingWindowEngineLC(StreamingWindowEngine):
             cache_sim3 = cache['sim3']
             s_d, R, t = accumulate_sim3(ref_sim3, cache_sim3)
             if 'scale_mask' in cache.keys():
-                cache['local_points'] = ref_sim3[0] * cache.pop('scale_mask') * cache.pop('local_points')
+                cache['local_points'] = s_d * cache.pop('scale_mask') * cache.pop('local_points')
             else:
                 cache['local_points'] = s_d * cache.pop('local_points')
             cache['camera_poses'] = apply_sim3_to_pose(cache.pop('camera_poses'), s_d, R, t)
