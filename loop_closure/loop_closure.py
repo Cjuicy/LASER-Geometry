@@ -12,7 +12,11 @@ from inference_engine import StreamingWindowEngine
 from inference_engine.inference_utils import register_adjacent_windows
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+dtype = (
+    torch.bfloat16
+    if device == "cuda" and torch.cuda.get_device_capability()[0] >= 8
+    else torch.float16
+)
 
 
 def get_args_parser():
@@ -118,6 +122,13 @@ class LoopClosureEngine:
 
         return predictions
 
+    @staticmethod
+    def _registration_fields(prediction):
+        return (
+            prediction.get('registration_local_points', prediction['local_points']),
+            prediction.get('registration_camera_poses', prediction['camera_poses']),
+        )
+
     def process_loops(self, raw_predictions):
         step = self.window_size - self.overlap
         num_chunks = (len(self.img_list) - self.overlap + step - 1) // step
@@ -152,8 +163,9 @@ class LoopClosureEngine:
             chunk_a_rela_begin = chunk_a_range[0] - self.chunk_indices[chunk_idx_a][0]
             chunk_a_rela_end = chunk_a_rela_begin + chunk_a_range[1] - chunk_a_range[0]
             chunk_data_a = raw_predictions[chunk_idx_a]
-            point_map_a = chunk_data_a['local_points'][chunk_a_rela_begin:chunk_a_rela_end]
-            cam_pose_a = chunk_data_a['camera_poses'][chunk_a_rela_begin:chunk_a_rela_end]
+            point_map_a_all, cam_pose_a_all = self._registration_fields(chunk_data_a)
+            point_map_a = point_map_a_all[chunk_a_rela_begin:chunk_a_rela_end]
+            cam_pose_a = cam_pose_a_all[chunk_a_rela_begin:chunk_a_rela_end]
             # conf_mask_a = chunk_data_a['mask'][chunk_a_rela_begin:chunk_a_rela_end]
             conf_map_a = chunk_data_a['conf'][chunk_a_rela_begin:chunk_a_rela_end]
             conf_a_thresh = torch.quantile(conf_map_a, self.top_conf_percentile, interpolation='nearest')
@@ -177,8 +189,9 @@ class LoopClosureEngine:
             chunk_b_rela_begin = chunk_b_range[0] - self.chunk_indices[chunk_idx_b][0]
             chunk_b_rela_end = chunk_b_rela_begin + chunk_b_range[1] - chunk_b_range[0]
             chunk_data_b = raw_predictions[chunk_idx_b]
-            point_map_b = chunk_data_b['local_points'][chunk_b_rela_begin:chunk_b_rela_end]
-            cam_pose_b = chunk_data_b['camera_poses'][chunk_b_rela_begin:chunk_b_rela_end]
+            point_map_b_all, cam_pose_b_all = self._registration_fields(chunk_data_b)
+            point_map_b = point_map_b_all[chunk_b_rela_begin:chunk_b_rela_end]
+            cam_pose_b = cam_pose_b_all[chunk_b_rela_begin:chunk_b_rela_end]
             # conf_mask_b = chunk_data_b['mask'][chunk_b_rela_begin:chunk_b_rela_end]
             conf_map_b = chunk_data_b['conf'][chunk_b_rela_begin:chunk_b_rela_end]
             conf_b_thresh = torch.quantile(conf_map_b, self.top_conf_percentile, interpolation='nearest')
