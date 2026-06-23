@@ -1,0 +1,173 @@
+import inspect
+
+import numpy as np
+import torch
+
+from inference_engine.utils import lsa
+
+
+def test_depth_graph_builder_keeps_original_laser_signature():
+    signature = inspect.signature(lsa.build_depth_sp_graph)
+
+    assert "point_map" not in signature.parameters
+    assert "intrinsic" not in signature.parameters
+    assert "normal_method" not in signature.parameters
+
+
+def test_depth_graph_builder_uses_depth_segmentation_only(monkeypatch):
+    calls = {}
+    labels = np.array([[[0, 0], [1, 1]]], dtype=np.int32)
+
+    def fake_batched_image_op_wrapper(depth, op, **kwargs):
+        calls["depth"] = depth
+        calls["op"] = op
+        calls["kwargs"] = kwargs
+        return labels
+
+    def fake_match_segmentation_seq(labels_arg, iou_thresh):
+        calls["labels"] = labels_arg
+        calls["iou_thresh"] = iou_thresh
+        return "depth_graph"
+
+    monkeypatch.setattr(lsa, "batched_image_op_wrapper", fake_batched_image_op_wrapper)
+    monkeypatch.setattr(lsa, "match_segmentation_seq", fake_match_segmentation_seq)
+
+    depth = np.ones((1, 2, 2), dtype=np.float32)
+    conf = np.ones((1, 2, 2), dtype=np.float32)
+    graph = lsa.build_depth_sp_graph(
+        depth,
+        depth_merge_thresh=0.25,
+        conf_map=conf,
+        top_conf_percentile=0.7,
+        corr_iou_thresh=0.33,
+    )
+
+    assert graph == "depth_graph"
+    np.testing.assert_array_equal(calls["depth"], depth)
+    assert calls["op"] is lsa.segment_depth_felzenszwalb_rag
+    assert calls["kwargs"] == {
+        "depth_merge_thresh": 0.25,
+        "conf_map": conf,
+        "top_conf_percentile": 0.7,
+    }
+    np.testing.assert_array_equal(calls["labels"], labels)
+    assert calls["iou_thresh"] == 0.33
+
+
+def test_geometry_graph_builder_uses_geometry_segmentation_inputs(monkeypatch):
+    calls = []
+    labels = [
+        np.array([[0, 0], [1, 1]], dtype=np.int32),
+        np.array([[2, 2], [3, 3]], dtype=np.int32),
+    ]
+
+    def fake_segment_geometry_felzenszwalb_rag(depth, **kwargs):
+        calls.append((depth, kwargs))
+        return labels[len(calls) - 1]
+
+    def fake_match_segmentation_seq(labels_arg, iou_thresh):
+        calls.append(("labels", labels_arg, iou_thresh))
+        return "geometry_graph"
+
+    monkeypatch.setattr(
+        lsa,
+        "segment_geometry_felzenszwalb_rag",
+        fake_segment_geometry_felzenszwalb_rag,
+    )
+    monkeypatch.setattr(lsa, "match_segmentation_seq", fake_match_segmentation_seq)
+
+    depth = np.ones((2, 2, 2), dtype=np.float32)
+    conf = np.full((2, 2, 2), 0.8, dtype=np.float32)
+    point_map = np.ones((2, 2, 2, 3), dtype=np.float32)
+    intrinsic = np.stack([np.eye(3), np.eye(3) * 2], axis=0).astype(np.float32)
+    graph = lsa.build_geometry_sp_graph(
+        depth,
+        depth_merge_thresh=0.2,
+        conf_map=conf,
+        top_conf_percentile=0.6,
+        corr_iou_thresh=0.44,
+        point_map=point_map,
+        intrinsic=intrinsic,
+        normal_method="sobel",
+    )
+
+    assert graph == "geometry_graph"
+    first_depth, first_kwargs = calls[0]
+    second_depth, second_kwargs = calls[1]
+    np.testing.assert_array_equal(first_depth, depth[0])
+    np.testing.assert_array_equal(second_depth, depth[1])
+    np.testing.assert_array_equal(first_kwargs["conf_map"], conf[0])
+    np.testing.assert_array_equal(second_kwargs["conf_map"], conf[1])
+    np.testing.assert_array_equal(first_kwargs["point_map"], point_map[0])
+    np.testing.assert_array_equal(second_kwargs["point_map"], point_map[1])
+    np.testing.assert_array_equal(first_kwargs["intrinsic"], intrinsic[0])
+    np.testing.assert_array_equal(second_kwargs["intrinsic"], intrinsic[1])
+    assert first_kwargs["normal_method"] == "sobel"
+    assert second_kwargs["normal_method"] == "sobel"
+
+    _, stacked_labels, iou_thresh = calls[2]
+    np.testing.assert_array_equal(stacked_labels, np.stack(labels, axis=0))
+    assert iou_thresh == 0.44
+
+
+def test_refine_segment_scales_is_mode_neutral_name(monkeypatch):
+    calls = {}
+
+    def fake_align(src_depth, tgt_depth, src_graphs, tgt_graphs, overlap, corr_iou_thresh):
+        calls["src_depth"] = src_depth
+        calls["tgt_depth"] = tgt_depth
+        calls["src_graphs"] = src_graphs
+        calls["tgt_graphs"] = tgt_graphs
+        calls["overlap"] = overlap
+        calls["corr_iou_thresh"] = corr_iou_thresh
+        return np.full(tgt_depth.shape, 2.0, dtype=np.float32)
+
+    monkeypatch.setattr(lsa, "align_adjacent_windows_depth_segments", fake_align)
+
+    src_pcd = np.ones((2, 1, 1, 3), dtype=np.float32)
+    tgt_pcd = np.ones((3, 1, 1, 3), dtype=np.float32) * 4.0
+    scale_mask = lsa.refine_segment_scales(
+        src_pcd,
+        tgt_pcd,
+        "src_graph",
+        "tgt_graph",
+        overlap=1,
+        corr_iou_thresh=0.9,
+    )
+
+    assert isinstance(scale_mask, torch.Tensor)
+    assert scale_mask.shape == (3, 1, 1, 1)
+    torch.testing.assert_close(scale_mask, torch.full((3, 1, 1, 1), 2.0))
+    np.testing.assert_array_equal(calls["src_depth"], src_pcd[..., -1])
+    np.testing.assert_array_equal(calls["tgt_depth"], tgt_pcd[..., -1])
+    assert calls["src_graphs"] == "src_graph"
+    assert calls["tgt_graphs"] == "tgt_graph"
+    assert calls["overlap"] == 1
+    assert calls["corr_iou_thresh"] == 0.9
+
+
+def test_refine_depth_segments_keeps_backward_compatible_alias(monkeypatch):
+    calls = []
+
+    def fake_refine_segment_scales(*args, **kwargs):
+        calls.append((args, kwargs))
+        return "scale_mask"
+
+    monkeypatch.setattr(lsa, "refine_segment_scales", fake_refine_segment_scales)
+
+    result = lsa.refine_depth_segments(
+        "src_pcd",
+        "tgt_pcd",
+        "src_graph",
+        "tgt_graph",
+        3,
+        corr_iou_thresh=0.8,
+    )
+
+    assert result == "scale_mask"
+    assert calls == [
+        (
+            ("src_pcd", "tgt_pcd", "src_graph", "tgt_graph", 3),
+            {"corr_iou_thresh": 0.8},
+        )
+    ]

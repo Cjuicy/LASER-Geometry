@@ -9,8 +9,7 @@ from .inference_utils import (
     register_adjacent_windows,
     estimate_pseudo_depth_and_intrinsics,
     unproject_depth_to_local_points,
-    make_sp_graph,
-    refine_depth_segments
+    refine_segment_scales
 )
 from .utils.geometry import (
     homogenize_points,
@@ -109,16 +108,20 @@ class StreamingWindowEngineLC(StreamingWindowEngine):
                 if self.depth_refine:
                     tgt_pcd = working_window['local_points'].cpu().numpy()
 
-                    tgt_sp_graph = make_sp_graph(
-                        tgt_pcd[..., -1],
-                        conf_map=working_window['conf'].cpu().numpy(),
-                        top_conf_percentile=self.top_conf_percentile,
-                        point_map=tgt_pcd,
-                        intrinsic=ref_intrinsic.cpu().numpy() if hasattr(ref_intrinsic, "cpu") else ref_intrinsic,
-                        segment_mode=self.segment_mode,
-                        normal_method=self.normal_method,
-                    )
-                    scale_mask = refine_depth_segments(
+                    if self.segment_mode == 'depth':
+                        tgt_sp_graph = self._build_depth_segment_graph(
+                            working_window['local_points'],
+                            working_window['conf'],
+                        )
+                    elif self.segment_mode == 'geometry':
+                        tgt_sp_graph = self._build_geometry_segment_graph(
+                            working_window['local_points'],
+                            working_window['conf'],
+                            ref_intrinsic,
+                        )
+                    else:
+                        raise ValueError(f'Unknown segment_mode: {self.segment_mode}')
+                    scale_mask = refine_segment_scales(
                         self.prev_window_cache['local_points'].cpu().numpy(),
                         tgt_pcd,
                         self.anchor_sp_graph,
@@ -140,17 +143,19 @@ class StreamingWindowEngineLC(StreamingWindowEngine):
                 )
 
                 if self.depth_refine:
-                    tgt_pcd = working_window['local_points'].cpu().numpy()
-
-                    tgt_sp_graph = make_sp_graph(
-                        tgt_pcd[..., -1],
-                        conf_map=working_window['conf'].cpu().numpy(),
-                        top_conf_percentile=self.top_conf_percentile,
-                        point_map=tgt_pcd,
-                        intrinsic=ref_intrinsic.cpu().numpy() if hasattr(ref_intrinsic, "cpu") else ref_intrinsic,
-                        segment_mode=self.segment_mode,
-                        normal_method=self.normal_method,
-                    )
+                    if self.segment_mode == 'depth':
+                        tgt_sp_graph = self._build_depth_segment_graph(
+                            working_window['local_points'],
+                            working_window['conf'],
+                        )
+                    elif self.segment_mode == 'geometry':
+                        tgt_sp_graph = self._build_geometry_segment_graph(
+                            working_window['local_points'],
+                            working_window['conf'],
+                            ref_intrinsic,
+                        )
+                    else:
+                        raise ValueError(f'Unknown segment_mode: {self.segment_mode}')
             self._update_cache(working_window, tgt_sp_graph)
             self._save_cache()
 

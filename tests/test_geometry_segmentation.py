@@ -1,7 +1,15 @@
 import numpy as np
 
-from inference_engine.utils.depth import merge_regions_geometry
+from inference_engine.utils import depth as depth_module
 from inference_engine.utils.geometry import build_geometry_info_np
+from inference_engine.utils.geometry_segmentation import merge_regions_geometry
+
+
+def test_depth_module_does_not_export_geometry_segmentation_entrypoints():
+    assert not hasattr(depth_module, "compute_region_geometry_descriptors")
+    assert not hasattr(depth_module, "should_merge_geometry")
+    assert not hasattr(depth_module, "merge_regions_geometry")
+    assert not hasattr(depth_module, "segment_geometry_felzenszwalb_rag")
 
 
 def test_merge_regions_geometry_merges_adjacent_regions_with_similar_depth_and_normals():

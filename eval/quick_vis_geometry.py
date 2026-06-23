@@ -18,7 +18,7 @@ import numpy as np
 import cv2
 
 from inference_engine.utils.geometry import build_geometry_info_np
-from inference_engine.utils.depth import segment_geometry_felzenszwalb_rag
+from inference_engine.utils.geometry_segmentation import segment_geometry_felzenszwalb_rag
 
 
 def _normalize_to_uint8(arr):

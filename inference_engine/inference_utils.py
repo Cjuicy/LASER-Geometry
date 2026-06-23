@@ -4,7 +4,13 @@ from .utils.geometry import (
     register_camera_poses_kabsch_pytorch,
     apply_sim3_to_pose
 )
-from .utils.lsa import make_sp_graph, refine_depth_segments
+from .utils.lsa import (
+    build_depth_sp_graph,
+    build_geometry_sp_graph,
+    make_sp_graph,
+    refine_depth_segments,
+    refine_segment_scales,
+)
 
 
 def dict_to_device(data, device):
@@ -140,7 +146,7 @@ def register_extrinsic_windows(
     anchor_pcd = pcd_windows[0]
     anchor_sp_graph = None
     if depth_refine:
-        anchor_sp_graph = make_sp_graph(
+        anchor_sp_graph = build_depth_sp_graph(
             pcd_windows[0][..., -1].cpu().numpy(),
             mask_windows[0].cpu().numpy()
         )
@@ -165,12 +171,12 @@ def register_extrinsic_windows(
         # full numpy processing pipeline
         if depth_refine:
             tgt_pcd = tgt_pcd.cpu().numpy()
-            tgt_sp_graph = make_sp_graph(
+            tgt_sp_graph = build_depth_sp_graph(
                 tgt_pcd[..., -1],
                 mask_windows[i].cpu().numpy()
             )
 
-            tgt_pcd_scaled = refine_depth_segments(
+            tgt_pcd_scaled = refine_segment_scales(
                 anchor_pcd.cpu().numpy(),
                 tgt_pcd,
                 anchor_sp_graph,

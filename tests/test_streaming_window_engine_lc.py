@@ -65,10 +65,14 @@ def test_lc_registration_worker_keeps_segment_scale_out_of_saved_sim3(monkeypatc
         "register_adjacent_windows",
         lambda *args, **kwargs: (torch.tensor(2.0), torch.eye(3), torch.zeros(3)),
     )
-    monkeypatch.setattr(lc_module, "make_sp_graph", lambda *args, **kwargs: ["graph"])
+    monkeypatch.setattr(
+        StreamingWindowEngineLC,
+        "_build_depth_segment_graph",
+        lambda self, *args, **kwargs: ["graph"],
+    )
     monkeypatch.setattr(
         lc_module,
-        "refine_depth_segments",
+        "refine_segment_scales",
         lambda *args, **kwargs: torch.full((1, 1, 1, 1), 1.5),
     )
 
