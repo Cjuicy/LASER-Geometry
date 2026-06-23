@@ -54,6 +54,11 @@ class StreamingWindowEngine(VanillaEngine):
             normal_method: str = 'cross',
             # ================================
     ):
+        if segment_mode not in ('depth', 'geometry'):
+            raise ValueError(f"Unknown segment_mode: {segment_mode}")
+        if segment_mode == 'geometry' and not depth_refine:
+            raise ValueError("segment_mode='geometry' only affects segment refinement; enable depth_refine.")
+
         # 1️⃣ 继承VanillaEngine，把真实模型delegate放到inference_device上
         super().__init__(
             delegate=delegate.to(inference_device)
