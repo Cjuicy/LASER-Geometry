@@ -170,33 +170,16 @@ def build_geometry_sp_graph(
     intrinsic=None,
     normal_method="cross",
 ):
-    labels_list = []
-
-    # ⚠️ 这里可能改动比较大，还没有编写成批处理的方式，所以一个个遍历处理，速度较慢
-    for i in range(depth.shape[0]):
-        depth_i = depth[i]
-        conf_i = conf_map[i] if conf_map is not None else None
-        point_i = point_map[i] if point_map is not None else None
-
-        if intrinsic is not None:
-            intrinsic_i = intrinsic[i] if intrinsic.ndim == 3 else intrinsic
-        else:
-            intrinsic_i = None
-
-        labels_i = segment_geometry_felzenszwalb_rag(
-            depth_i,
-            conf_map=conf_i,
-            intrinsic=intrinsic_i,                  # 🌟新增内容
-            point_map=point_i,                      # 🌟新增内容
-            top_conf_percentile=top_conf_percentile,
-            depth_merge_thresh=depth_merge_thresh,
-            normal_method=normal_method,            # 🌟新增内容
-        )
-
-        labels_list.append(labels_i)
-
-    # 最后仍然回到统一的 graph构建流程中
-    labels = np.stack(labels_list, axis=0)
+    labels = batched_image_op_wrapper(
+        depth,
+        segment_geometry_felzenszwalb_rag,
+        depth_merge_thresh=depth_merge_thresh,
+        conf_map=conf_map,
+        top_conf_percentile=top_conf_percentile,
+        point_map=point_map,
+        intrinsic=intrinsic,
+        normal_method=normal_method,
+    )
     return build_sp_graph_from_labels(labels, corr_iou_thresh=corr_iou_thresh)
 
 

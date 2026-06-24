@@ -55,24 +55,30 @@ def test_depth_graph_builder_uses_depth_segmentation_only(monkeypatch):
 
 
 def test_geometry_graph_builder_uses_geometry_segmentation_inputs(monkeypatch):
-    calls = []
-    labels = [
-        np.array([[0, 0], [1, 1]], dtype=np.int32),
-        np.array([[2, 2], [3, 3]], dtype=np.int32),
-    ]
+    calls = {}
+    labels = np.array(
+        [
+            [[0, 0], [1, 1]],
+            [[2, 2], [3, 3]],
+        ],
+        dtype=np.int32,
+    )
 
-    def fake_segment_geometry_felzenszwalb_rag(depth, **kwargs):
-        calls.append((depth, kwargs))
-        return labels[len(calls) - 1]
+    def fake_batched_image_op_wrapper(depth, op, **kwargs):
+        calls["depth"] = depth
+        calls["op"] = op
+        calls["kwargs"] = kwargs
+        return labels
 
     def fake_match_segmentation_seq(labels_arg, iou_thresh):
-        calls.append(("labels", labels_arg, iou_thresh))
+        calls["labels"] = labels_arg
+        calls["iou_thresh"] = iou_thresh
         return "geometry_graph"
 
     monkeypatch.setattr(
         lsa,
-        "segment_geometry_felzenszwalb_rag",
-        fake_segment_geometry_felzenszwalb_rag,
+        "batched_image_op_wrapper",
+        fake_batched_image_op_wrapper,
     )
     monkeypatch.setattr(lsa, "match_segmentation_seq", fake_match_segmentation_seq)
 
@@ -92,22 +98,16 @@ def test_geometry_graph_builder_uses_geometry_segmentation_inputs(monkeypatch):
     )
 
     assert graph == "geometry_graph"
-    first_depth, first_kwargs = calls[0]
-    second_depth, second_kwargs = calls[1]
-    np.testing.assert_array_equal(first_depth, depth[0])
-    np.testing.assert_array_equal(second_depth, depth[1])
-    np.testing.assert_array_equal(first_kwargs["conf_map"], conf[0])
-    np.testing.assert_array_equal(second_kwargs["conf_map"], conf[1])
-    np.testing.assert_array_equal(first_kwargs["point_map"], point_map[0])
-    np.testing.assert_array_equal(second_kwargs["point_map"], point_map[1])
-    np.testing.assert_array_equal(first_kwargs["intrinsic"], intrinsic[0])
-    np.testing.assert_array_equal(second_kwargs["intrinsic"], intrinsic[1])
-    assert first_kwargs["normal_method"] == "sobel"
-    assert second_kwargs["normal_method"] == "sobel"
-
-    _, stacked_labels, iou_thresh = calls[2]
-    np.testing.assert_array_equal(stacked_labels, np.stack(labels, axis=0))
-    assert iou_thresh == 0.44
+    np.testing.assert_array_equal(calls["depth"], depth)
+    assert calls["op"] is lsa.segment_geometry_felzenszwalb_rag
+    assert calls["kwargs"]["depth_merge_thresh"] == 0.2
+    assert calls["kwargs"]["top_conf_percentile"] == 0.6
+    assert calls["kwargs"]["normal_method"] == "sobel"
+    np.testing.assert_array_equal(calls["kwargs"]["conf_map"], conf)
+    np.testing.assert_array_equal(calls["kwargs"]["point_map"], point_map)
+    np.testing.assert_array_equal(calls["kwargs"]["intrinsic"], intrinsic)
+    np.testing.assert_array_equal(calls["labels"], labels)
+    assert calls["iou_thresh"] == 0.44
 
 
 def test_refine_segment_scales_is_mode_neutral_name(monkeypatch):

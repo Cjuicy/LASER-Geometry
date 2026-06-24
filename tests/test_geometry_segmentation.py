@@ -2,6 +2,7 @@ import numpy as np
 
 from inference_engine.utils import depth as depth_module
 from inference_engine.utils.geometry import build_geometry_info_np
+from inference_engine.utils import geometry_segmentation as geom_seg
 from inference_engine.utils.geometry_segmentation import merge_regions_geometry
 
 
@@ -101,3 +102,63 @@ def test_build_geometry_info_supports_sobel_normals():
     assert geometry_info["normal"].shape == (5, 5, 3)
     assert np.isfinite(geometry_info["normal"]).all()
     assert geometry_info["normal_edge"].shape == (5, 5)
+
+
+def test_geometry_segmentation_selects_batched_auxiliary_inputs(monkeypatch):
+    calls = {}
+    labels = np.array([[0, 1], [0, 1]], dtype=np.int32)
+
+    def fake_build_geometry_info_np(depth, conf=None, intrinsic=None, points=None, normal_method="cross"):
+        calls["depth"] = depth
+        calls["conf"] = conf
+        calls["intrinsic"] = intrinsic
+        calls["points"] = points
+        calls["normal_method"] = normal_method
+        normals = np.zeros((*depth.shape, 3), dtype=np.float32)
+        normals[..., 2] = 1.0
+        return {"normal": normals}
+
+    def fake_felzenszwalb(image, **kwargs):
+        calls["felzenszwalb_image_shape"] = image.shape
+        return labels
+
+    def fake_merge_regions_geometry(labels_arg, depth, geometry_info, conf=None, **kwargs):
+        calls["merge_conf"] = conf
+        return labels_arg
+
+    monkeypatch.setattr(geom_seg, "build_geometry_info_np", fake_build_geometry_info_np)
+    monkeypatch.setattr(geom_seg, "felzenszwalb", fake_felzenszwalb)
+    monkeypatch.setattr(geom_seg, "merge_regions_geometry", fake_merge_regions_geometry)
+
+    depth = np.ones((2, 2), dtype=np.float32)
+    conf = np.stack(
+        [
+            np.full((2, 2), 0.1, dtype=np.float32),
+            np.full((2, 2), 0.9, dtype=np.float32),
+        ]
+    )
+    point_map = np.stack(
+        [
+            np.zeros((2, 2, 3), dtype=np.float32),
+            np.ones((2, 2, 3), dtype=np.float32),
+        ]
+    )
+    intrinsic = np.stack([np.eye(3), np.eye(3) * 2], axis=0).astype(np.float32)
+
+    result = geom_seg.segment_geometry_felzenszwalb_rag(
+        depth,
+        conf_map=conf,
+        point_map=point_map,
+        intrinsic=intrinsic,
+        top_conf_percentile=0.5,
+        normal_method="sobel",
+        batch_idx=1,
+    )
+
+    np.testing.assert_array_equal(result, labels)
+    np.testing.assert_array_equal(calls["conf"], conf[1])
+    np.testing.assert_array_equal(calls["merge_conf"], conf[1])
+    np.testing.assert_array_equal(calls["points"], point_map[1])
+    np.testing.assert_array_equal(calls["intrinsic"], intrinsic[1])
+    assert calls["normal_method"] == "sobel"
+    assert calls["felzenszwalb_image_shape"] == (2, 2, 4)

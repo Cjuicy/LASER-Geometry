@@ -4,6 +4,16 @@ from skimage.segmentation import felzenszwalb
 from .geometry import build_geometry_info_np
 
 
+def _select_batch_item(value, batch_idx, single_frame_ndim):
+    if value is None or batch_idx is None:
+        return value
+
+    value = np.asarray(value)
+    if value.ndim == single_frame_ndim + 1:
+        return value[batch_idx]
+    return value
+
+
 def compute_region_geometry_descriptors(labels, depth, geometry_info, conf=None):
     """
     Compute region-level geometry descriptors used by geometry-aware merging.
@@ -146,10 +156,15 @@ def segment_geometry_felzenszwalb_rag(
     seg_sigma=1.0,
     seg_min_size=300,
     normal_method="cross",
+    batch_idx=None,
 ):
     """
     Generate geometry-aware segmentation labels from depth, normals, and confidence.
     """
+    conf_map = _select_batch_item(conf_map, batch_idx, depth_map.ndim)
+    point_map = _select_batch_item(point_map, batch_idx, depth_map.ndim + 1)
+    intrinsic = _select_batch_item(intrinsic, batch_idx, 2)
+
     geometry_info = build_geometry_info_np(
         depth=depth_map,
         conf=conf_map,
