@@ -173,3 +173,74 @@ def test_visualize_depth_conf_can_compare_depth_and_geometry_segments(tmp_path, 
     assert "depth_segment_count: 4" in summary
     assert "geometry_segment_count: 2" in summary
     assert "segment_boundary_iou" in summary
+
+
+def test_visualize_depth_conf_can_mask_segment_visuals_by_confidence(tmp_path, monkeypatch):
+    vis_depth_conf = _load_vis_depth_conf_module()
+    scene_dir = tmp_path / "scene"
+    scene_dir.mkdir()
+
+    depth = np.arange(16, dtype=np.float32).reshape(4, 4) + 1.0
+    conf = np.array(
+        [
+            [0.1, 0.1, 0.8, 0.8],
+            [0.1, 0.1, 0.8, 0.8],
+            [0.2, 0.2, 0.9, 0.9],
+            [0.2, 0.2, 0.9, 0.9],
+        ],
+        dtype=np.float32,
+    )
+    np.save(scene_dir / "frame_0000.npy", depth)
+    np.save(scene_dir / "conf_0.npy", conf)
+    np.savetxt(scene_dir / "pred_intrinsics.txt", np.eye(3).reshape(1, 9))
+
+    depth_labels = np.array(
+        [
+            [0, 0, 1, 1],
+            [0, 0, 1, 1],
+            [2, 2, 3, 3],
+            [2, 2, 3, 3],
+        ],
+        dtype=np.int32,
+    )
+    geometry_labels = np.array(
+        [
+            [0, 1, 1, 1],
+            [0, 1, 1, 1],
+            [2, 2, 3, 3],
+            [2, 2, 3, 3],
+        ],
+        dtype=np.int32,
+    )
+
+    monkeypatch.setattr(
+        vis_depth_conf,
+        "segment_depth_felzenszwalb_rag",
+        lambda *args, **kwargs: depth_labels,
+    )
+    monkeypatch.setattr(
+        vis_depth_conf,
+        "segment_geometry_felzenszwalb_rag",
+        lambda *args, **kwargs: geometry_labels,
+    )
+
+    out_dir = tmp_path / "masked"
+    vis_depth_conf.visualize_depth_conf(
+        scene_dir=scene_dir,
+        frame_idx=0,
+        out_dir=out_dir,
+        vis_segments=True,
+        segment_conf_quantile=0.5,
+    )
+
+    assert (out_dir / "depth_segment_conf_masked.png").is_file()
+    assert (out_dir / "geometry_segment_conf_masked.png").is_file()
+    assert (out_dir / "depth_segment_overlay_conf_masked.png").is_file()
+    assert (out_dir / "geometry_segment_overlay_conf_masked.png").is_file()
+    assert (out_dir / "segment_boundary_compare_conf_masked.png").is_file()
+    assert (out_dir / "segment_difference_conf_masked.png").is_file()
+
+    summary = (out_dir / "summary.txt").read_text(encoding="utf-8")
+    assert "segment_conf_quantile: 0.5" in summary
+    assert "segment_conf_pixels: 8" in summary
+    assert "segment_boundary_iou_conf_masked" in summary

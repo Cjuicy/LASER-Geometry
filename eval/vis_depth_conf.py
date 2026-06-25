@@ -140,12 +140,21 @@ def _segment_boundaries(labels):
     return boundary
 
 
-def _save_segment_vis(labels, path):
+def _segment_color_image(labels):
     labels = np.asarray(labels)
     unique_labels, inverse = np.unique(labels.reshape(-1), return_inverse=True)
     rng = np.random.default_rng(0)
     colors = rng.integers(0, 255, size=(len(unique_labels), 3), dtype=np.uint8)
-    color_img = colors[inverse].reshape((*labels.shape, 3))
+    return colors[inverse].reshape((*labels.shape, 3))
+
+
+def _save_segment_vis(labels, path):
+    cv2.imwrite(str(path), _segment_color_image(labels))
+
+
+def _save_segment_vis_masked(labels, mask, path):
+    color_img = _segment_color_image(labels)
+    color_img[~mask] = np.array([32, 32, 32], dtype=np.uint8)
     cv2.imwrite(str(path), color_img)
 
 
@@ -156,32 +165,59 @@ def _save_segment_overlay(base_bgr, labels, path, color):
     cv2.imwrite(str(path), overlay)
 
 
-def _save_segment_boundary_compare(depth_labels, geometry_labels, path):
+def _save_segment_overlay_masked(base_bgr, labels, mask, path, color):
+    overlay = (base_bgr.astype(np.float32) * 0.25).astype(np.uint8)
+    overlay[mask] = base_bgr[mask]
+    boundary = _segment_boundaries(labels) & mask
+    overlay[boundary] = np.array(color, dtype=np.uint8)
+    cv2.imwrite(str(path), overlay)
+
+
+def _save_segment_boundary_compare(depth_labels, geometry_labels, path, mask=None):
     depth_boundary = _segment_boundaries(depth_labels)
     geometry_boundary = _segment_boundaries(geometry_labels)
+    if mask is not None:
+        depth_boundary = depth_boundary & mask
+        geometry_boundary = geometry_boundary & mask
+
     compare = np.zeros((*depth_boundary.shape, 3), dtype=np.uint8)
+    if mask is not None:
+        compare[~mask] = np.array([32, 32, 32], dtype=np.uint8)
     compare[depth_boundary & ~geometry_boundary] = np.array([0, 0, 255], dtype=np.uint8)
     compare[~depth_boundary & geometry_boundary] = np.array([0, 255, 0], dtype=np.uint8)
     compare[depth_boundary & geometry_boundary] = np.array([0, 255, 255], dtype=np.uint8)
     cv2.imwrite(str(path), compare)
 
 
-def _segment_stats_lines(depth_labels, geometry_labels):
+def _segment_stats_lines(depth_labels, geometry_labels, mask=None, suffix=""):
     depth_boundary = _segment_boundaries(depth_labels)
     geometry_boundary = _segment_boundaries(geometry_labels)
+    if mask is not None:
+        depth_boundary = depth_boundary & mask
+        geometry_boundary = geometry_boundary & mask
+
     shared_boundary = depth_boundary & geometry_boundary
     union_boundary = depth_boundary | geometry_boundary
     boundary_iou = (
         np.count_nonzero(shared_boundary) / max(np.count_nonzero(union_boundary), 1)
     )
+    if mask is None:
+        depth_segment_count = np.unique(depth_labels).size
+        geometry_segment_count = np.unique(geometry_labels).size
+    elif np.any(mask):
+        depth_segment_count = np.unique(depth_labels[mask]).size
+        geometry_segment_count = np.unique(geometry_labels[mask]).size
+    else:
+        depth_segment_count = 0
+        geometry_segment_count = 0
 
     return [
-        f"depth_segment_count: {np.unique(depth_labels).size}",
-        f"geometry_segment_count: {np.unique(geometry_labels).size}",
-        f"depth_boundary_pixels: {int(np.count_nonzero(depth_boundary))}",
-        f"geometry_boundary_pixels: {int(np.count_nonzero(geometry_boundary))}",
-        f"shared_boundary_pixels: {int(np.count_nonzero(shared_boundary))}",
-        f"segment_boundary_iou: {boundary_iou:.8g}",
+        f"depth_segment_count{suffix}: {depth_segment_count}",
+        f"geometry_segment_count{suffix}: {geometry_segment_count}",
+        f"depth_boundary_pixels{suffix}: {int(np.count_nonzero(depth_boundary))}",
+        f"geometry_boundary_pixels{suffix}: {int(np.count_nonzero(geometry_boundary))}",
+        f"shared_boundary_pixels{suffix}: {int(np.count_nonzero(shared_boundary))}",
+        f"segment_boundary_iou{suffix}: {boundary_iou:.8g}",
     ]
 
 
@@ -304,6 +340,7 @@ def visualize_depth_conf(
     vis_segments=False,
     depth_merge_thresh=0.1,
     top_conf_percentile=0.3,
+    segment_conf_quantile=None,
     normal_method="cross",
 ):
     depth_path, conf_path, rgb_path = _resolve_inputs(
@@ -320,6 +357,8 @@ def visualize_depth_conf(
         raise ValueError("alpha must be in [0, 1].")
     if not 0.0 <= conf_quantile <= 1.0:
         raise ValueError("conf_quantile must be in [0, 1].")
+    if segment_conf_quantile is not None and not 0.0 <= segment_conf_quantile <= 1.0:
+        raise ValueError("segment_conf_quantile must be in [0, 1].")
 
     depth = _load_npy_2d(depth_path, "depth")
     conf = _load_npy_2d(conf_path, "confidence")
@@ -395,6 +434,57 @@ def visualize_depth_conf(
             geometry_labels,
             out_dir / "segment_difference.png",
         )
+        segment_mask_lines = []
+        if segment_conf_quantile is not None:
+            segment_conf_mask, segment_conf_threshold = _high_conf_mask(conf, segment_conf_quantile)
+            _save_segment_vis_masked(
+                depth_labels,
+                segment_conf_mask,
+                out_dir / "depth_segment_conf_masked.png",
+            )
+            _save_segment_vis_masked(
+                geometry_labels,
+                segment_conf_mask,
+                out_dir / "geometry_segment_conf_masked.png",
+            )
+            _save_segment_overlay_masked(
+                base_bgr,
+                depth_labels,
+                segment_conf_mask,
+                out_dir / "depth_segment_overlay_conf_masked.png",
+                [0, 0, 255],
+            )
+            _save_segment_overlay_masked(
+                base_bgr,
+                geometry_labels,
+                segment_conf_mask,
+                out_dir / "geometry_segment_overlay_conf_masked.png",
+                [0, 255, 0],
+            )
+            _save_segment_boundary_compare(
+                depth_labels,
+                geometry_labels,
+                out_dir / "segment_boundary_compare_conf_masked.png",
+                mask=segment_conf_mask,
+            )
+            _save_segment_boundary_compare(
+                depth_labels,
+                geometry_labels,
+                out_dir / "segment_difference_conf_masked.png",
+                mask=segment_conf_mask,
+            )
+            segment_mask_lines = [
+                f"segment_conf_quantile: {segment_conf_quantile}",
+                f"segment_conf_threshold: {segment_conf_threshold:.8g}",
+                f"segment_conf_pixels: {int(np.count_nonzero(segment_conf_mask))}",
+                f"segment_conf_pixel_ratio: {np.count_nonzero(segment_conf_mask) / segment_conf_mask.size:.8g}",
+                *_segment_stats_lines(
+                    depth_labels,
+                    geometry_labels,
+                    mask=segment_conf_mask,
+                    suffix="_conf_masked",
+                ),
+            ]
         segment_lines = [
             "",
             f"intrinsic_path: {intrinsic_path}",
@@ -402,6 +492,7 @@ def visualize_depth_conf(
             f"top_conf_percentile: {top_conf_percentile}",
             f"normal_method: {normal_method}",
             *_segment_stats_lines(depth_labels, geometry_labels),
+            *segment_mask_lines,
         ]
 
     summary_lines = [
@@ -470,6 +561,12 @@ def parse_args(argv=None):
         help="Confidence quantile used to estimate depth merge thresholds.",
     )
     parser.add_argument(
+        "--segment_conf_quantile",
+        type=float,
+        default=None,
+        help="If set, also show segment visualizations only inside this confidence quantile mask.",
+    )
+    parser.add_argument(
         "--normal_method",
         default="cross",
         choices=["cross", "sobel"],
@@ -494,6 +591,7 @@ def main(argv=None):
         vis_segments=args.vis_segments,
         depth_merge_thresh=args.depth_merge_thresh,
         top_conf_percentile=args.top_conf_percentile,
+        segment_conf_quantile=args.segment_conf_quantile,
         normal_method=args.normal_method,
     )
     print(f"Saved depth-confidence visualization to: {result['out_dir']}")
