@@ -11,10 +11,19 @@ high and how those regions align with the depth structure.
 """
 
 import argparse
+import sys
+import warnings
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from inference_engine.utils.depth import segment_depth_felzenszwalb_rag
+from inference_engine.utils.geometry_segmentation import segment_geometry_felzenszwalb_rag
 
 
 def _as_path(path):
@@ -74,6 +83,28 @@ def _load_rgb_bgr(path, target_shape):
     return rgb_bgr
 
 
+def _load_intrinsic(path, frame_idx):
+    if path is None or not path.exists():
+        return None
+
+    if path.suffix == ".npy":
+        intrinsic = np.load(path)
+    else:
+        intrinsic = np.loadtxt(path)
+
+    intrinsic = np.asarray(intrinsic, dtype=np.float32)
+    if intrinsic.shape == (3, 3):
+        return intrinsic
+
+    intrinsic = intrinsic.reshape(-1, 3, 3)
+    if frame_idx >= intrinsic.shape[0]:
+        raise IndexError(
+            f"frame_idx={frame_idx} is out of range for intrinsic file with "
+            f"{intrinsic.shape[0]} frames: {path}"
+        )
+    return intrinsic[frame_idx]
+
+
 def _blend(base_bgr, heat_bgr, alpha):
     return cv2.addWeighted(base_bgr, 1.0 - alpha, heat_bgr, alpha, 0.0)
 
@@ -99,6 +130,59 @@ def _save_depth_high_conf_overlay(depth_color, mask, path):
     boundary = cv2.Canny((mask.astype(np.uint8) * 255), 50, 150) > 0
     overlay[boundary] = np.array([255, 255, 255], dtype=np.uint8)
     cv2.imwrite(str(path), overlay)
+
+
+def _segment_boundaries(labels):
+    labels = np.asarray(labels)
+    boundary = np.zeros(labels.shape, dtype=bool)
+    boundary[:, 1:] |= labels[:, 1:] != labels[:, :-1]
+    boundary[1:, :] |= labels[1:, :] != labels[:-1, :]
+    return boundary
+
+
+def _save_segment_vis(labels, path):
+    labels = np.asarray(labels)
+    unique_labels, inverse = np.unique(labels.reshape(-1), return_inverse=True)
+    rng = np.random.default_rng(0)
+    colors = rng.integers(0, 255, size=(len(unique_labels), 3), dtype=np.uint8)
+    color_img = colors[inverse].reshape((*labels.shape, 3))
+    cv2.imwrite(str(path), color_img)
+
+
+def _save_segment_overlay(base_bgr, labels, path, color):
+    overlay = base_bgr.copy()
+    boundary = _segment_boundaries(labels)
+    overlay[boundary] = np.array(color, dtype=np.uint8)
+    cv2.imwrite(str(path), overlay)
+
+
+def _save_segment_boundary_compare(depth_labels, geometry_labels, path):
+    depth_boundary = _segment_boundaries(depth_labels)
+    geometry_boundary = _segment_boundaries(geometry_labels)
+    compare = np.zeros((*depth_boundary.shape, 3), dtype=np.uint8)
+    compare[depth_boundary & ~geometry_boundary] = np.array([0, 0, 255], dtype=np.uint8)
+    compare[~depth_boundary & geometry_boundary] = np.array([0, 255, 0], dtype=np.uint8)
+    compare[depth_boundary & geometry_boundary] = np.array([0, 255, 255], dtype=np.uint8)
+    cv2.imwrite(str(path), compare)
+
+
+def _segment_stats_lines(depth_labels, geometry_labels):
+    depth_boundary = _segment_boundaries(depth_labels)
+    geometry_boundary = _segment_boundaries(geometry_labels)
+    shared_boundary = depth_boundary & geometry_boundary
+    union_boundary = depth_boundary | geometry_boundary
+    boundary_iou = (
+        np.count_nonzero(shared_boundary) / max(np.count_nonzero(union_boundary), 1)
+    )
+
+    return [
+        f"depth_segment_count: {np.unique(depth_labels).size}",
+        f"geometry_segment_count: {np.unique(geometry_labels).size}",
+        f"depth_boundary_pixels: {int(np.count_nonzero(depth_boundary))}",
+        f"geometry_boundary_pixels: {int(np.count_nonzero(geometry_boundary))}",
+        f"shared_boundary_pixels: {int(np.count_nonzero(shared_boundary))}",
+        f"segment_boundary_iou: {boundary_iou:.8g}",
+    ]
 
 
 def _pearson_corr(depth, conf):
@@ -184,6 +268,21 @@ def _resolve_inputs(scene_dir=None, frame_idx=0, depth_path=None, conf_path=None
     return depth_path, conf_path, rgb_path
 
 
+def _resolve_intrinsic(scene_dir=None, intrinsic_path=None):
+    intrinsic_path = _as_path(intrinsic_path)
+    if intrinsic_path is not None:
+        return intrinsic_path
+
+    scene_dir = _as_path(scene_dir)
+    if scene_dir is None:
+        return None
+
+    candidate = scene_dir / "pred_intrinsics.txt"
+    if candidate.exists():
+        return candidate
+    return None
+
+
 def _default_out_dir(scene_dir, depth_path, frame_idx):
     if scene_dir is not None:
         return Path("outputs") / "depth_conf_vis" / Path(scene_dir).name / f"frame_{frame_idx:04d}"
@@ -197,10 +296,15 @@ def visualize_depth_conf(
     depth_path=None,
     conf_path=None,
     rgb_path=None,
+    intrinsic_path=None,
     out_dir=None,
     alpha=0.45,
     conf_quantile=0.7,
     depth_percentiles=(2.0, 98.0),
+    vis_segments=False,
+    depth_merge_thresh=0.1,
+    top_conf_percentile=0.3,
+    normal_method="cross",
 ):
     depth_path, conf_path, rgb_path = _resolve_inputs(
         scene_dir=scene_dir,
@@ -209,6 +313,7 @@ def visualize_depth_conf(
         conf_path=conf_path,
         rgb_path=rgb_path,
     )
+    intrinsic_path = _resolve_intrinsic(scene_dir=scene_dir, intrinsic_path=intrinsic_path)
     out_dir = _as_path(out_dir) or _default_out_dir(scene_dir, depth_path, frame_idx)
 
     if not 0.0 <= alpha <= 1.0:
@@ -237,6 +342,68 @@ def visualize_depth_conf(
     if rgb_bgr is not None:
         cv2.imwrite(str(out_dir / "rgb_conf_overlay.png"), _blend(rgb_bgr, conf_color, alpha))
 
+    segment_lines = []
+    if vis_segments:
+        intrinsic = _load_intrinsic(intrinsic_path, frame_idx)
+        if intrinsic is None:
+            raise ValueError(
+                "Geometry segmentation visualization requires an intrinsic file. "
+                "Use --scene_dir with pred_intrinsics.txt, or pass --intrinsic."
+            )
+
+        conf_batch = conf[None, ...]
+        depth_labels = segment_depth_felzenszwalb_rag(
+            depth,
+            depth_merge_thresh=depth_merge_thresh,
+            conf_map=conf_batch,
+            top_conf_percentile=top_conf_percentile,
+            batch_idx=0,
+        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Got image with third dimension of 4.*",
+                category=RuntimeWarning,
+            )
+            geometry_labels = segment_geometry_felzenszwalb_rag(
+                depth,
+                depth_merge_thresh=depth_merge_thresh,
+                conf_map=conf_batch,
+                top_conf_percentile=top_conf_percentile,
+                intrinsic=intrinsic,
+                normal_method=normal_method,
+                batch_idx=0,
+            )
+
+        base_bgr = rgb_bgr if rgb_bgr is not None else depth_color
+        _save_segment_vis(depth_labels, out_dir / "depth_segment.png")
+        _save_segment_vis(geometry_labels, out_dir / "geometry_segment.png")
+        _save_segment_overlay(base_bgr, depth_labels, out_dir / "depth_segment_overlay.png", [0, 0, 255])
+        _save_segment_overlay(
+            base_bgr,
+            geometry_labels,
+            out_dir / "geometry_segment_overlay.png",
+            [0, 255, 0],
+        )
+        _save_segment_boundary_compare(
+            depth_labels,
+            geometry_labels,
+            out_dir / "segment_boundary_compare.png",
+        )
+        _save_segment_boundary_compare(
+            depth_labels,
+            geometry_labels,
+            out_dir / "segment_difference.png",
+        )
+        segment_lines = [
+            "",
+            f"intrinsic_path: {intrinsic_path}",
+            f"depth_merge_thresh: {depth_merge_thresh}",
+            f"top_conf_percentile: {top_conf_percentile}",
+            f"normal_method: {normal_method}",
+            *_segment_stats_lines(depth_labels, geometry_labels),
+        ]
+
     summary_lines = [
         f"depth_path: {depth_path}",
         f"confidence_path: {conf_path}",
@@ -245,6 +412,7 @@ def visualize_depth_conf(
         f"confidence_quantile: {conf_quantile}",
         "",
         *_stats_lines(depth, conf, high_mask, high_threshold),
+        *segment_lines,
     ]
     (out_dir / "summary.txt").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
 
@@ -253,6 +421,7 @@ def visualize_depth_conf(
         "depth_path": depth_path,
         "conf_path": conf_path,
         "rgb_path": rgb_path,
+        "intrinsic_path": intrinsic_path,
         "high_conf_threshold": high_threshold,
     }
 
@@ -266,6 +435,7 @@ def parse_args(argv=None):
     parser.add_argument("--depth", dest="depth_path", default=None, help="Explicit depth .npy path.")
     parser.add_argument("--conf", dest="conf_path", default=None, help="Explicit confidence .npy path.")
     parser.add_argument("--rgb", dest="rgb_path", default=None, help="Optional explicit RGB image path.")
+    parser.add_argument("--intrinsic", dest="intrinsic_path", default=None, help="Optional intrinsic .txt/.npy path.")
     parser.add_argument("--out_dir", default=None, help="Output directory for visualization images.")
     parser.add_argument("--alpha", type=float, default=0.45, help="Overlay alpha for confidence heatmap.")
     parser.add_argument(
@@ -282,6 +452,29 @@ def parse_args(argv=None):
         metavar=("LOW", "HIGH"),
         help="Percentile range for depth color normalization.",
     )
+    parser.add_argument(
+        "--vis_segments",
+        action="store_true",
+        help="Also write depth-vs-geometry segmentation comparison images.",
+    )
+    parser.add_argument(
+        "--depth_merge_thresh",
+        type=float,
+        default=0.1,
+        help="Depth merge threshold ratio used by both segmentation paths.",
+    )
+    parser.add_argument(
+        "--top_conf_percentile",
+        type=float,
+        default=0.3,
+        help="Confidence quantile used to estimate depth merge thresholds.",
+    )
+    parser.add_argument(
+        "--normal_method",
+        default="cross",
+        choices=["cross", "sobel"],
+        help="Normal estimation method for geometry segmentation.",
+    )
     return parser.parse_args(argv)
 
 
@@ -293,10 +486,15 @@ def main(argv=None):
         depth_path=args.depth_path,
         conf_path=args.conf_path,
         rgb_path=args.rgb_path,
+        intrinsic_path=args.intrinsic_path,
         out_dir=args.out_dir,
         alpha=args.alpha,
         conf_quantile=args.conf_quantile,
         depth_percentiles=tuple(args.depth_percentiles),
+        vis_segments=args.vis_segments,
+        depth_merge_thresh=args.depth_merge_thresh,
+        top_conf_percentile=args.top_conf_percentile,
+        normal_method=args.normal_method,
     )
     print(f"Saved depth-confidence visualization to: {result['out_dir']}")
 
