@@ -10,6 +10,8 @@ from pi3.utils.graph import Vertex
 from ._segmentation_cy import merge_regions
 from .fast_seg import fast_graph_segmentation
 
+SCALE_ANCHOR_MODES = ("depth_irls", "conf_weighted_irls")
+
 # 1️⃣ 估计深度尺度s_d
 def align_depth_irls(
         src_depth,
@@ -47,6 +49,133 @@ def align_depth_irls(
             break
 
     return s_d
+
+
+def _normalize_confidence_for_weights(conf, eps=1e-6):
+    """Map arbitrary confidence logits/scores to positive IRLS weights."""
+    conf = np.asarray(conf, dtype=np.float64)
+    finite = np.isfinite(conf)
+    if not np.any(finite):
+        return np.ones_like(conf, dtype=np.float64)
+
+    valid_conf = conf[finite]
+    conf_min = valid_conf.min()
+    conf_span = valid_conf.max() - conf_min
+    if conf_span <= eps:
+        return np.ones_like(conf, dtype=np.float64)
+
+    weights = (conf - conf_min) / conf_span
+    weights[~finite] = 0.0
+    return np.clip(weights, eps, 1.0)
+
+
+def align_depth_irls_conf_weighted(
+        src_depth,
+        tgt_depth,
+        src_conf=None,
+        tgt_conf=None,
+        mask=None,
+        iters=10,
+        eps=1e-8,
+        stop_tol=0.05,
+        clamp_min=1e-6,
+        conf_eps=1e-6
+):
+    """Estimate depth scale with confidence-weighted IRLS.
+
+    This is the M1 experimental anchor estimator. The original align_depth_irls
+    path is intentionally left unchanged and remains the default.
+    """
+    if mask is not None:
+        src_depth = src_depth[mask]
+        tgt_depth = tgt_depth[mask]
+        if src_conf is not None:
+            src_conf = src_conf[mask]
+        if tgt_conf is not None:
+            tgt_conf = tgt_conf[mask]
+
+    src_depth = np.asarray(src_depth, dtype=np.float64)
+    tgt_depth = np.asarray(tgt_depth, dtype=np.float64)
+
+    valid = np.isfinite(src_depth) & np.isfinite(tgt_depth) & (np.abs(src_depth) > eps)
+    if src_conf is not None:
+        src_conf = np.asarray(src_conf, dtype=np.float64)
+        valid &= np.isfinite(src_conf)
+    if tgt_conf is not None:
+        tgt_conf = np.asarray(tgt_conf, dtype=np.float64)
+        valid &= np.isfinite(tgt_conf)
+
+    if not np.any(valid):
+        return 1.0
+
+    src_depth = src_depth[valid]
+    tgt_depth = tgt_depth[valid]
+
+    if src_conf is None:
+        src_w = np.ones_like(src_depth, dtype=np.float64)
+    else:
+        src_w = _normalize_confidence_for_weights(src_conf[valid], eps=conf_eps)
+
+    if tgt_conf is None:
+        tgt_w = np.ones_like(tgt_depth, dtype=np.float64)
+    else:
+        tgt_w = _normalize_confidence_for_weights(tgt_conf[valid], eps=conf_eps)
+
+    conf_w = np.sqrt(src_w * tgt_w)
+    conf_w = np.clip(conf_w, conf_eps, 1.0)
+
+    den = (conf_w * src_depth ** 2).sum()
+    if den <= eps:
+        return 1.0
+
+    num = (conf_w * src_depth * tgt_depth).sum()
+    s_d = np.maximum(num / den, clamp_min)
+
+    for _ in range(iters):
+        d_res = s_d * src_depth - tgt_depth
+        res = np.abs(d_res) + eps
+        w = conf_w / res
+
+        den = (w * src_depth ** 2).sum()
+        if den <= eps:
+            break
+        num = (w * src_depth * tgt_depth).sum()
+        s_d_new = np.maximum(num / den, clamp_min)
+        converged = abs(s_d_new - s_d) < stop_tol
+        s_d = s_d_new
+
+        if converged:
+            break
+
+    return s_d
+
+
+def _validate_scale_anchor_mode(scale_anchor_mode):
+    if scale_anchor_mode not in SCALE_ANCHOR_MODES:
+        raise ValueError(
+            f"Unknown scale_anchor_mode: {scale_anchor_mode}. "
+            f"Expected one of {SCALE_ANCHOR_MODES}."
+        )
+
+
+def _estimate_depth_scale(
+        src_depth,
+        tgt_depth,
+        mask,
+        src_conf=None,
+        tgt_conf=None,
+        scale_anchor_mode="depth_irls"
+):
+    _validate_scale_anchor_mode(scale_anchor_mode)
+    if scale_anchor_mode == "depth_irls":
+        return align_depth_irls(src_depth, tgt_depth, mask)
+    return align_depth_irls_conf_weighted(
+        src_depth,
+        tgt_depth,
+        src_conf=src_conf,
+        tgt_conf=tgt_conf,
+        mask=mask,
+    )
 
 # 2️⃣ 原始 LASER 的 depth segmentation 分支之一： 深度分割
 def segment_depth_felzenszwalb_rag(
@@ -178,7 +307,10 @@ def connect_bipartite_sp_graphs(graph1, graph2, iou_thresh=0.3):
 def _edge_scale_worker(
         src_depth,
         tgt_depth,
-        src_vertex
+        src_vertex,
+        src_conf=None,
+        tgt_conf=None,
+        scale_anchor_mode="depth_irls"
 ):
     src_mask = src_vertex.data
     # 1️⃣ 对 src_vertex 的每条连接边
@@ -187,7 +319,14 @@ def _edge_scale_worker(
         # 2️⃣ 取 source mask 和 target mask 的交集
         inter_mask = src_mask & tgt_mask
         # 3️⃣ 估计 target 到 source 的 scale
-        tgt2src_s = align_depth_irls(tgt_depth, src_depth, inter_mask)
+        tgt2src_s = _estimate_depth_scale(
+            tgt_depth,
+            src_depth,
+            inter_mask,
+            src_conf=tgt_conf,
+            tgt_conf=src_conf,
+            scale_anchor_mode=scale_anchor_mode,
+        )
         # 4️⃣ 把这个 scale 写入 target vertex 的 cache
         tgt_v.cache['iou'].append(tgt_iou)
         tgt_v.cache['scale'].append(tgt2src_s)
@@ -199,23 +338,45 @@ def assign_overlap_window_depth_scale(
         tgt_depth_overlap,
         src_sp_graphs_overlap,
         tgt_sp_graphs_overlap,
+        src_conf_overlap=None,
+        tgt_conf_overlap=None,
+        scale_anchor_mode="depth_irls",
         iou_thresh=0.4,
         n_jobs=1
 ):
+    _validate_scale_anchor_mode(scale_anchor_mode)
+
     # 1️⃣ 对每一对 overlap 帧的 graph 建边
     for src_sp_graph, tgt_sp_graph in zip(src_sp_graphs_overlap, tgt_sp_graphs_overlap):
         connect_bipartite_sp_graphs(src_sp_graph, tgt_sp_graph, iou_thresh=iou_thresh)
 
     for idx, src_graph in enumerate(src_sp_graphs_overlap):
+        src_conf = None if src_conf_overlap is None else src_conf_overlap[idx]
+        tgt_conf = None if tgt_conf_overlap is None else tgt_conf_overlap[idx]
         n_jobs = min(os.cpu_count(), len(src_graph)) if n_jobs is None else n_jobs
         if n_jobs == 1:
             for src_v in src_graph:
                 # 2️⃣ 对每个 source segment 计算它连接到 target segment 的 scale
-                _edge_scale_worker(src_depth_overlap[idx], tgt_depth_overlap[idx], src_v)
+                _edge_scale_worker(
+                    src_depth_overlap[idx],
+                    tgt_depth_overlap[idx],
+                    src_v,
+                    src_conf=src_conf,
+                    tgt_conf=tgt_conf,
+                    scale_anchor_mode=scale_anchor_mode,
+                )
         else:
             with ThreadPoolExecutor(max_workers=n_jobs) as ex:
                 promises = [
-                    ex.submit(_edge_scale_worker, src_depth_overlap[idx], tgt_depth_overlap[idx], src_v)
+                    ex.submit(
+                        _edge_scale_worker,
+                        src_depth_overlap[idx],
+                        tgt_depth_overlap[idx],
+                        src_v,
+                        src_conf,
+                        tgt_conf,
+                        scale_anchor_mode,
+                    )
                     for src_v in src_graph
                 ]
                 for promise in as_completed(promises):

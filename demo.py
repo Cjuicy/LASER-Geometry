@@ -54,6 +54,13 @@ def get_args_parser():
         type=str,
         help='normal estimation method'
     )
+    parser.add_argument(
+        '--scale_anchor_mode',
+        default='depth_irls',
+        choices=['depth_irls', 'conf_weighted_irls'],
+        type=str,
+        help='segment scale anchor estimator: original depth_irls or M1 confidence-weighted IRLS'
+    )
     # =================================
 
     return parser
@@ -85,6 +92,7 @@ def load_model(args):
         # English: New geometry segmentation configuration.
         segment_mode=args.segment_mode,
         normal_method=args.normal_method,
+        scale_anchor_mode=args.scale_anchor_mode,
     )
 # 4️⃣ 实际跑推理主流程
 def run_model(image_names, scene_name, output_path):

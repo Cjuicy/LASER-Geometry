@@ -5,7 +5,12 @@ from inference_engine import streaming_window_engine as swe_module
 from inference_engine.streaming_window_engine import StreamingWindowEngine
 
 
-def _engine(tmp_path, segment_mode="depth", normal_method="cross"):
+def _engine(
+    tmp_path,
+    segment_mode="depth",
+    normal_method="cross",
+    scale_anchor_mode="depth_irls",
+):
     return StreamingWindowEngine(
         torch.nn.Identity(),
         inference_device="cpu",
@@ -18,6 +23,7 @@ def _engine(tmp_path, segment_mode="depth", normal_method="cross"):
         benchmark_latency=False,
         segment_mode=segment_mode,
         normal_method=normal_method,
+        scale_anchor_mode=scale_anchor_mode,
     )
 
 
@@ -122,13 +128,26 @@ def test_registration_worker_uses_geometry_specific_refinement_branch(monkeypatc
 
     refine_calls = []
 
-    def fake_refine(prev_points, tgt_points, anchor_graph, tgt_graph, overlap):
-        refine_calls.append((anchor_graph, tgt_graph, overlap))
+    def fake_refine(
+        prev_points,
+        tgt_points,
+        anchor_graph,
+        tgt_graph,
+        overlap,
+        src_conf=None,
+        tgt_conf=None,
+        scale_anchor_mode="depth_irls",
+    ):
+        refine_calls.append((anchor_graph, tgt_graph, overlap, src_conf, tgt_conf, scale_anchor_mode))
         return torch.full((1, 1, 1, 1), 1.5)
 
     monkeypatch.setattr(swe_module, "refine_segment_scales", fake_refine)
 
-    engine = _engine(tmp_path, segment_mode="geometry")
+    engine = _engine(
+        tmp_path,
+        segment_mode="geometry",
+        scale_anchor_mode="conf_weighted_irls",
+    )
     build_calls = []
 
     def fake_build_segment_graph(local_points, conf, ref_intrinsic):
@@ -144,6 +163,15 @@ def test_registration_worker_uses_geometry_specific_refinement_branch(monkeypatc
     engine._registration_worker()
 
     assert len(build_calls) == 2
-    assert refine_calls == [("graph_1", "graph_2", 1)]
+    assert len(refine_calls) == 1
+    anchor_graph, tgt_graph, overlap, src_conf, tgt_conf, scale_anchor_mode = refine_calls[0]
+    assert (anchor_graph, tgt_graph, overlap, scale_anchor_mode) == (
+        "graph_1",
+        "graph_2",
+        1,
+        "conf_weighted_irls",
+    )
+    torch.testing.assert_close(torch.from_numpy(src_conf), torch.ones(1, 1, 1))
+    torch.testing.assert_close(torch.from_numpy(tgt_conf), torch.ones(1, 1, 1))
     second_cache = torch.load(tmp_path / "window_cache_1.pt", map_location="cpu", weights_only=False)
     torch.testing.assert_close(second_cache["local_points"], torch.full((1, 1, 1, 3), 3.0))

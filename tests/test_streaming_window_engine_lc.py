@@ -141,6 +141,7 @@ def test_lc_registration_worker_uses_geometry_graph_in_geometry_mode(monkeypatch
         raise AssertionError("depth graph builder should not run in geometry mode")
 
     geometry_calls = []
+    refine_calls = []
 
     def fake_geometry_builder(self, local_points, conf, ref_intrinsic):
         geometry_calls.append((local_points.shape, conf.shape, ref_intrinsic.shape))
@@ -148,11 +149,11 @@ def test_lc_registration_worker_uses_geometry_graph_in_geometry_mode(monkeypatch
 
     monkeypatch.setattr(StreamingWindowEngineLC, "_build_depth_segment_graph", fail_depth_builder)
     monkeypatch.setattr(StreamingWindowEngineLC, "_build_geometry_segment_graph", fake_geometry_builder)
-    monkeypatch.setattr(
-        lc_module,
-        "refine_segment_scales",
-        lambda *args, **kwargs: torch.full((1, 1, 1, 1), 1.5),
-    )
+    def fake_refine(*args, **kwargs):
+        refine_calls.append((args, kwargs))
+        return torch.full((1, 1, 1, 1), 1.5)
+
+    monkeypatch.setattr(lc_module, "refine_segment_scales", fake_refine)
 
     engine = StreamingWindowEngineLC(
         torch.nn.Identity(),
@@ -163,6 +164,7 @@ def test_lc_registration_worker_uses_geometry_graph_in_geometry_mode(monkeypatch
         overlap=1,
         depth_refine=True,
         segment_mode="geometry",
+        scale_anchor_mode="conf_weighted_irls",
         cache_root=str(tmp_path),
     )
     engine.temp_cache_dir = tmp_path
@@ -173,3 +175,8 @@ def test_lc_registration_worker_uses_geometry_graph_in_geometry_mode(monkeypatch
     engine._registration_worker()
 
     assert len(geometry_calls) == 2
+    assert len(refine_calls) == 1
+    _, kwargs = refine_calls[0]
+    assert kwargs["scale_anchor_mode"] == "conf_weighted_irls"
+    assert tuple(kwargs["src_conf"].shape) == (1, 1, 1)
+    assert tuple(kwargs["tgt_conf"].shape) == (1, 1, 1)

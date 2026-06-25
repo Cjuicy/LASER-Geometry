@@ -3,6 +3,8 @@ import inspect
 import numpy as np
 import torch
 
+from pi3.utils.graph import Vertex
+from inference_engine.utils import depth as depth_module
 from inference_engine.utils import lsa
 
 
@@ -113,19 +115,34 @@ def test_geometry_graph_builder_uses_geometry_segmentation_inputs(monkeypatch):
 def test_refine_segment_scales_is_mode_neutral_name(monkeypatch):
     calls = {}
 
-    def fake_align(src_depth, tgt_depth, src_graphs, tgt_graphs, overlap, corr_iou_thresh):
+    def fake_align(
+        src_depth,
+        tgt_depth,
+        src_graphs,
+        tgt_graphs,
+        overlap,
+        corr_iou_thresh,
+        src_conf=None,
+        tgt_conf=None,
+        scale_anchor_mode="depth_irls",
+    ):
         calls["src_depth"] = src_depth
         calls["tgt_depth"] = tgt_depth
         calls["src_graphs"] = src_graphs
         calls["tgt_graphs"] = tgt_graphs
         calls["overlap"] = overlap
         calls["corr_iou_thresh"] = corr_iou_thresh
+        calls["src_conf"] = src_conf
+        calls["tgt_conf"] = tgt_conf
+        calls["scale_anchor_mode"] = scale_anchor_mode
         return np.full(tgt_depth.shape, 2.0, dtype=np.float32)
 
     monkeypatch.setattr(lsa, "align_adjacent_windows_depth_segments", fake_align)
 
     src_pcd = np.ones((2, 1, 1, 3), dtype=np.float32)
     tgt_pcd = np.ones((3, 1, 1, 3), dtype=np.float32) * 4.0
+    src_conf = np.ones((2, 1, 1), dtype=np.float32) * 0.5
+    tgt_conf = np.ones((3, 1, 1), dtype=np.float32) * 0.8
     scale_mask = lsa.refine_segment_scales(
         src_pcd,
         tgt_pcd,
@@ -133,6 +150,9 @@ def test_refine_segment_scales_is_mode_neutral_name(monkeypatch):
         "tgt_graph",
         overlap=1,
         corr_iou_thresh=0.9,
+        src_conf=src_conf,
+        tgt_conf=tgt_conf,
+        scale_anchor_mode="conf_weighted_irls",
     )
 
     assert isinstance(scale_mask, torch.Tensor)
@@ -144,6 +164,9 @@ def test_refine_segment_scales_is_mode_neutral_name(monkeypatch):
     assert calls["tgt_graphs"] == "tgt_graph"
     assert calls["overlap"] == 1
     assert calls["corr_iou_thresh"] == 0.9
+    np.testing.assert_array_equal(calls["src_conf"], src_conf)
+    np.testing.assert_array_equal(calls["tgt_conf"], tgt_conf)
+    assert calls["scale_anchor_mode"] == "conf_weighted_irls"
 
 
 def test_refine_depth_segments_keeps_backward_compatible_alias(monkeypatch):
@@ -171,3 +194,50 @@ def test_refine_depth_segments_keeps_backward_compatible_alias(monkeypatch):
             {"corr_iou_thresh": 0.8},
         )
     ]
+
+
+def test_confidence_weighted_irls_prefers_high_confidence_depth_pair():
+    src_depth = np.array([1.0, 1.0], dtype=np.float32)
+    tgt_depth = np.array([2.0, 10.0], dtype=np.float32)
+    src_conf = np.array([10.0, -10.0], dtype=np.float32)
+    tgt_conf = np.array([8.0, -8.0], dtype=np.float32)
+
+    unweighted = depth_module.align_depth_irls(src_depth, tgt_depth)
+    weighted = depth_module.align_depth_irls_conf_weighted(
+        src_depth,
+        tgt_depth,
+        src_conf,
+        tgt_conf,
+    )
+
+    assert unweighted > 5.0
+    assert weighted < 3.0
+
+
+def test_overlap_scale_assignment_can_use_confidence_weighted_anchor_mode():
+    src_depth = np.array([[[2.0, 10.0]]], dtype=np.float32)
+    tgt_depth = np.array([[[1.0, 1.0]]], dtype=np.float32)
+    src_conf = np.array([[[10.0, -10.0]]], dtype=np.float32)
+    tgt_conf = np.array([[[8.0, -8.0]]], dtype=np.float32)
+
+    src_vertex = Vertex(
+        data=np.array([[True, True]]),
+        default_cache={"iou": [], "scale": []},
+    )
+    tgt_vertex = Vertex(
+        data=np.array([[True, True]]),
+        default_cache={"iou": [], "scale": []},
+    )
+
+    depth_module.assign_overlap_window_depth_scale(
+        src_depth,
+        tgt_depth,
+        [[src_vertex]],
+        [[tgt_vertex]],
+        src_conf_overlap=src_conf,
+        tgt_conf_overlap=tgt_conf,
+        scale_anchor_mode="conf_weighted_irls",
+    )
+
+    assert len(tgt_vertex.cache["scale"]) == 1
+    assert tgt_vertex.cache["scale"][0] < 3.0

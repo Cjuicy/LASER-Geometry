@@ -19,3 +19,4 @@ def test_demo_vggt_lc_exposes_expected_cli_options():
     assert "--model_ckpt" in result.stdout
     assert "--segment_mode" in result.stdout
     assert "--normal_method" in result.stdout
+    assert "--scale_anchor_mode" in result.stdout

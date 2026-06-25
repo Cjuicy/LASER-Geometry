@@ -36,6 +36,7 @@ class StreamingWindowEngineLC(StreamingWindowEngine):
             # English: New segmentation mode configuration.
             segment_mode: str = 'depth',
             normal_method: str = 'cross',
+            scale_anchor_mode: str = 'depth_irls',
             # ================================
     ):
         super().__init__(
@@ -54,6 +55,7 @@ class StreamingWindowEngineLC(StreamingWindowEngine):
             # English: Pass to the parent StreamingWindowEngine.
             segment_mode=segment_mode,
             normal_method=normal_method,
+            scale_anchor_mode=scale_anchor_mode,
             # ================================
         )
 
@@ -126,7 +128,10 @@ class StreamingWindowEngineLC(StreamingWindowEngine):
                         tgt_pcd,
                         self.anchor_sp_graph,
                         tgt_sp_graph,
-                        self.overlap
+                        self.overlap,
+                        src_conf=self.prev_window_cache['conf'].cpu().numpy(),
+                        tgt_conf=working_window['conf'].cpu().numpy(),
+                        scale_anchor_mode=self.scale_anchor_mode
                     )
                     working_window['scale_mask'] = scale_mask
             else:

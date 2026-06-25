@@ -52,10 +52,13 @@ class StreamingWindowEngine(VanillaEngine):
             # English: New segmentation mode configuration.
             segment_mode: str = 'depth',
             normal_method: str = 'cross',
+            scale_anchor_mode: str = 'depth_irls',
             # ================================
     ):
         if segment_mode not in ('depth', 'geometry'):
             raise ValueError(f"Unknown segment_mode: {segment_mode}")
+        if scale_anchor_mode not in ('depth_irls', 'conf_weighted_irls'):
+            raise ValueError(f"Unknown scale_anchor_mode: {scale_anchor_mode}")
         if segment_mode == 'geometry' and not depth_refine:
             raise ValueError("segment_mode='geometry' only affects segment refinement; enable depth_refine.")
 
@@ -84,6 +87,10 @@ class StreamingWindowEngine(VanillaEngine):
         # 中文：normal_method 控制 geometry.py 中 normal 的估计方法。
         # English: normal_method controls the normal estimation method in geometry.py.
         self.normal_method = normal_method          # 控制geometry segmentation 里的normal估计方法（这里面后面会有各种方法，需要钻研的地方）
+
+        # 中文：scale_anchor_mode 控制 segment 对齐时的初始尺度锚点估计方式。
+        # English: scale_anchor_mode controls how overlap segment scale anchors are estimated.
+        self.scale_anchor_mode = scale_anchor_mode  # depth_irls：原始 LASER；conf_weighted_irls：M1 置信度加权实验
         # ================================
 
         # 5️⃣ 初始化缓存和线程状态
@@ -266,7 +273,10 @@ class StreamingWindowEngine(VanillaEngine):
                             tgt_pcd,                                                # 当前的点云
                             self.anchor_sp_graph,                                   # 前一个窗口的segment graph（用于和当前窗口做segment-level对齐）
                             tgt_sp_graph,                                           # 当前窗口的segment graph（用于和前一个窗口做segment-level对齐）
-                            self.overlap                                            # 窗口重叠帧数（用于segment-level对齐时的IoU计算）
+                            self.overlap,                                           # 窗口重叠帧数（用于segment-level对齐时的IoU计算）
+                            src_conf=self.prev_window_cache['conf'].cpu().numpy(),
+                            tgt_conf=working_window['conf'].cpu().numpy(),
+                            scale_anchor_mode=self.scale_anchor_mode
                         )
                     # 🌟3️⃣ 分支2:新增 geometry segmentation 先构建 geometry-aware graph，再独立进入 refinement。
                     elif self.segment_mode == 'geometry':
@@ -281,7 +291,10 @@ class StreamingWindowEngine(VanillaEngine):
                             tgt_pcd,
                             self.anchor_sp_graph,
                             tgt_sp_graph,
-                            self.overlap
+                            self.overlap,
+                            src_conf=self.prev_window_cache['conf'].cpu().numpy(),
+                            tgt_conf=working_window['conf'].cpu().numpy(),
+                            scale_anchor_mode=self.scale_anchor_mode
                         )
                     else:
                         raise ValueError(f'Unknown segment_mode: {self.segment_mode}')

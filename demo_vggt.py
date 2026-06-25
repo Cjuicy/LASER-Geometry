@@ -61,6 +61,13 @@ def get_args_parser():
         type=str,
         help="normal estimation method",
     )
+    parser.add_argument(
+        "--scale_anchor_mode",
+        default="depth_irls",
+        choices=["depth_irls", "conf_weighted_irls"],
+        type=str,
+        help="segment scale anchor estimator: original depth_irls or M1 confidence-weighted IRLS",
+    )
     return parser
 
 
@@ -90,6 +97,7 @@ def load_model(args):
         top_conf_percentile=0.3,
         segment_mode=args.segment_mode,
         normal_method=args.normal_method,
+        scale_anchor_mode=args.scale_anchor_mode,
     )
 
 

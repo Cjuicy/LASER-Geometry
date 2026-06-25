@@ -24,7 +24,10 @@ def refine_segment_scales(
         src_sp_graphs,          # 前一个窗口的 segment graph
         tgt_sp_graphs,          # 当前窗口的 segment graph
         overlap,                # 两个窗口的重叠帧数量
-        corr_iou_thresh=0.4     # 判断 segment 是否对应的 IoU 阈值
+        corr_iou_thresh=0.4,    # 判断 segment 是否对应的 IoU 阈值
+        src_conf=None,
+        tgt_conf=None,
+        scale_anchor_mode="depth_irls"
 ):
     # 1️⃣ 只取点云最后一维作为 depth。也就是说 refinement 本质上是在 depth map 上估计尺度修正。
     """Estimate a segment-level scale mask from two windows and their graphs."""
@@ -38,7 +41,10 @@ def refine_segment_scales(
         src_sp_graphs,
         tgt_sp_graphs,
         overlap,
-        corr_iou_thresh
+        corr_iou_thresh,
+        src_conf=src_conf,
+        tgt_conf=tgt_conf,
+        scale_anchor_mode=scale_anchor_mode,
     )
 
     # 3️⃣ 将 [N, H, W] 的 numpy mask 转成 torch tensor，并扩成 [N, H, W, 1]，方便在 streaming_window_engine.py 里直接乘到 local_points 上。
@@ -57,7 +63,10 @@ def align_adjacent_windows_depth_segments(
         src_sp_graphs,
         tgt_sp_graphs,
         overlap,
-        corr_iou_thresh=0.4
+        corr_iou_thresh=0.4,
+        src_conf=None,
+        tgt_conf=None,
+        scale_anchor_mode="depth_irls"
 ):
     """
     src_depth: previous window depth map
@@ -103,6 +112,8 @@ def align_adjacent_windows_depth_segments(
     tgt_depth_overlap = tgt_depth[:overlap]
     src_sp_graphs_overlap = src_sp_graphs[-overlap:]
     tgt_sp_graphs_overlap = tgt_sp_graphs[:overlap]
+    src_conf_overlap = None if src_conf is None else src_conf[-overlap:]
+    tgt_conf_overlap = None if tgt_conf is None else tgt_conf[:overlap]
 
     # 4️⃣ 清掉 source overlap graph 里的旧边，避免上一次窗口对齐残留的边影响这一次 scale assignment。
     for sp_graph in src_sp_graphs_overlap:
@@ -116,6 +127,9 @@ def align_adjacent_windows_depth_segments(
         tgt_depth_overlap,
         src_sp_graphs_overlap,
         tgt_sp_graphs_overlap,
+        src_conf_overlap=src_conf_overlap,
+        tgt_conf_overlap=tgt_conf_overlap,
+        scale_anchor_mode=scale_anchor_mode,
         iou_thresh=corr_iou_thresh      # 控制 segment 对应关系的严格程度，IoU不够高的segment 不回被当作可靠对象
     )
     # 6️⃣ 沿当前窗口 graph 传播 scale
