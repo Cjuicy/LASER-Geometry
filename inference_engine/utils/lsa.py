@@ -1,18 +1,21 @@
-# LASER 的 Local Scale Alignment / Segment-level Scale Refinement 工具层
-# 1. 根据depth 或者 geometry segmentation 构建 segment graph
-# 2. 根据相邻窗口的 overlap 区域的 segment 对应关系，估计当前窗口的深度尺度修正mask
+# Local Scale Alignment / segment-level scale refinement orchestration.
+# Responsibilities:
+# 1. Build depth or geometry segment graphs from per-frame segmentation labels.
+# 2. Cut adjacent windows to their overlap region and initialize scale anchors there.
+# 3. Propagate scale anchors through the target graph and return a dense scale mask.
+# 中文职责：
+# 1. 作为 Local Scale Alignment 的编排层，统一调度 depth/geometry segment graph。
+# 2. 负责切出相邻窗口的 overlap 区域，并在 overlap 内初始化 segment scale anchor。
+# 3. 负责把 overlap 得到的尺度锚点沿当前窗口 graph 传播，最终生成稠密 scale mask。
+# 4. 不负责具体的 depth 分割、geometry 分割，也不负责具体 scale estimator 的实现。
 import torch
 import numpy as np
 
 
-from .depth import (
-    # 分割相关
-    segment_depth_felzenszwalb_rag,
-    match_segmentation_seq,
-    # 尺度修正相关
-    assign_overlap_window_depth_scale,
-)
+from .depth import segment_depth_felzenszwalb_rag
 from .geometry_segmentation import segment_geometry_felzenszwalb_rag
+from .scale_anchor import assign_overlap_window_depth_scale
+from .segment_graph import match_segmentation_seq
 
 # batched_image_op_wrapper 用在 depth segmentation 分支里，负责对一个 batch/序列里的多帧逐帧执行图像操作。
 from .batch_threading import batched_image_op_wrapper

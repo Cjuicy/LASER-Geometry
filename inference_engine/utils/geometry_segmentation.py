@@ -1,4 +1,12 @@
-# 1️⃣ 导入必要的包
+# Geometry-aware segmentation label generation.
+# Responsibilities:
+# 1. Build per-frame geometry descriptors from depth, normals, points, and confidence.
+# 2. Produce segmentation labels using geometry features plus region merging rules.
+# 3. Stay independent from window overlap, segment graph propagation, and scale estimation.
+# 中文职责：
+# 1. 负责 geometry-aware segmentation 的单帧 labels 生成。
+# 2. 基于 depth、point map、intrinsic、normal、confidence 构建几何特征并做区域合并。
+# 3. 不负责 window overlap、segment graph 传播或尺度估计。
 import numpy as np                              # numpy数组计算
 from skimage.segmentation import felzenszwalb   # 初始图像分割算法
 

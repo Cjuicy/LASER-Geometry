@@ -1,3 +1,12 @@
+# Batch execution helper for per-frame image operations.
+# Responsibilities:
+# 1. Apply a single-frame operation to a sequence or batch of images.
+# 2. Preserve frame order across sequential or threaded execution.
+# 3. Keep batching concerns out of individual segmentation functions.
+# 中文职责：
+# 1. 负责把单帧图像/深度操作包装成 batch/序列操作。
+# 2. 支持顺序执行和多线程执行，并保证输出帧顺序不乱。
+# 3. 让 depth/geometry segmentation 函数只关心单帧逻辑，不处理 batch 调度。
 import os
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed

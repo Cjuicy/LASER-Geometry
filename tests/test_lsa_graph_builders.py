@@ -6,6 +6,7 @@ import torch
 from pi3.utils.graph import Vertex
 from inference_engine.utils import depth as depth_module
 from inference_engine.utils import lsa
+from inference_engine.utils import scale_anchor as scale_anchor_module
 
 
 def test_depth_graph_builder_keeps_original_laser_signature():
@@ -14,6 +15,15 @@ def test_depth_graph_builder_keeps_original_laser_signature():
     assert "point_map" not in signature.parameters
     assert "intrinsic" not in signature.parameters
     assert "normal_method" not in signature.parameters
+
+
+def test_depth_module_only_owns_depth_segmentation_entrypoints():
+    assert hasattr(depth_module, "segment_depth_felzenszwalb_rag")
+    assert not hasattr(depth_module, "align_depth_irls")
+    assert not hasattr(depth_module, "align_depth_irls_conf_weighted")
+    assert not hasattr(depth_module, "assign_overlap_window_depth_scale")
+    assert not hasattr(depth_module, "match_segmentation_seq")
+    assert not hasattr(depth_module, "connect_bipartite_sp_graphs")
 
 
 def test_depth_graph_builder_uses_depth_segmentation_only(monkeypatch):
@@ -202,8 +212,8 @@ def test_confidence_weighted_irls_prefers_high_confidence_depth_pair():
     src_conf = np.array([10.0, -10.0], dtype=np.float32)
     tgt_conf = np.array([8.0, -8.0], dtype=np.float32)
 
-    unweighted = depth_module.align_depth_irls(src_depth, tgt_depth)
-    weighted = depth_module.align_depth_irls_conf_weighted(
+    unweighted = scale_anchor_module.align_depth_irls(src_depth, tgt_depth)
+    weighted = scale_anchor_module.align_depth_irls_conf_weighted(
         src_depth,
         tgt_depth,
         src_conf,
@@ -229,7 +239,7 @@ def test_overlap_scale_assignment_can_use_confidence_weighted_anchor_mode():
         default_cache={"iou": [], "scale": []},
     )
 
-    depth_module.assign_overlap_window_depth_scale(
+    scale_anchor_module.assign_overlap_window_depth_scale(
         src_depth,
         tgt_depth,
         [[src_vertex]],

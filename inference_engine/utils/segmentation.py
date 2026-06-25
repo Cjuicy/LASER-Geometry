@@ -1,3 +1,11 @@
+# Legacy segmentation region-merge utilities.
+# Responsibilities:
+# 1. Merge adjacent labeled regions using depth similarity.
+# 2. Provide a compact disjoint-set implementation for older segmentation paths.
+# 中文职责：
+# 1. 提供旧版 segmentation 的区域合并工具。
+# 2. 根据相邻区域的 depth 相似性合并 labels。
+# 3. 当前作为 legacy 工具保留，不承载 geometry segmentation 或 scale anchor 逻辑。
 import numpy as np
 from scipy import ndimage
 

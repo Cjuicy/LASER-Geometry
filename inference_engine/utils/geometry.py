@@ -1,3 +1,12 @@
+# Geometry and registration primitives.
+# Responsibilities:
+# 1. Register cameras or point clouds with SE3/Sim3-style transforms.
+# 2. Apply scale/rotation/translation transforms to poses and points.
+# 3. Build local geometric features such as normals, edges, and validity masks.
+# 中文职责：
+# 1. 提供几何/配准基础函数，包括相机位姿或点云的 SE3/Sim3 对齐。
+# 2. 提供 scale、rotation、translation 在 pose/point 上的应用工具。
+# 3. 提供 normal、edge、valid mask 等局部几何特征构建函数，供 geometry segmentation 使用。
 import torch
 import numpy as np
 
