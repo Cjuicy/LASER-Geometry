@@ -61,6 +61,17 @@ def get_args_parser():
         type=str,
         help='segment scale anchor estimator: original depth_irls or M1 confidence-weighted IRLS'
     )
+    parser.add_argument(
+        '--debug_alignment',
+        action='store_true',
+        help='save optional alignment debug traces without changing normal outputs'
+    )
+    parser.add_argument(
+        '--debug_alignment_path',
+        default='outputs/debug_alignment',
+        type=str,
+        help='root directory for optional alignment debug traces'
+    )
     # =================================
 
     return parser
@@ -93,6 +104,9 @@ def load_model(args):
         segment_mode=args.segment_mode,
         normal_method=args.normal_method,
         scale_anchor_mode=args.scale_anchor_mode,
+        debug_alignment=args.debug_alignment,
+        debug_alignment_path=args.debug_alignment_path,
+        debug_alignment_scene=args.scene_name,
     )
 # 4️⃣ 实际跑推理主流程
 def run_model(image_names, scene_name, output_path):

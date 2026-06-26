@@ -26,6 +26,7 @@ from .inference_utils import (              # 包含了一系列的核心几何�
     sliding_window_t,
     sliding_window_l
 )
+from .alignment_debug import AlignmentDebugRecorder, summarize_graph_layer
 from .utils.geometry import homogenize_points
 
 STOP_SIGNAL = object()                      # 线程队列里的停止标记
@@ -53,6 +54,9 @@ class StreamingWindowEngine(VanillaEngine):
             segment_mode: str = 'depth',
             normal_method: str = 'cross',
             scale_anchor_mode: str = 'depth_irls',
+            debug_alignment: bool = False,
+            debug_alignment_path: str | None = None,
+            debug_alignment_scene: str | None = None,
             # ================================
     ):
         if segment_mode not in ('depth', 'geometry'):
@@ -91,6 +95,13 @@ class StreamingWindowEngine(VanillaEngine):
         # 中文：scale_anchor_mode 控制 segment 对齐时的初始尺度锚点估计方式。
         # English: scale_anchor_mode controls how overlap segment scale anchors are estimated.
         self.scale_anchor_mode = scale_anchor_mode  # depth_irls：原始 LASER；conf_weighted_irls：M1 置信度加权实验
+
+        self.debug_alignment = bool(debug_alignment)
+        self.alignment_debug_recorder = AlignmentDebugRecorder(
+            enabled=self.debug_alignment,
+            root_dir=debug_alignment_path,
+            scene_name=debug_alignment_scene,
+        )
         # ================================
 
         # 5️⃣ 初始化缓存和线程状态
@@ -146,6 +157,62 @@ class StreamingWindowEngine(VanillaEngine):
             point_map=local_points_np,
             intrinsic=ref_intrinsic.cpu().numpy() if hasattr(ref_intrinsic, "cpu") else ref_intrinsic,
             normal_method=self.normal_method,
+        )
+
+    def _record_alignment_debug_pair(
+        self,
+        *,
+        pair_index,
+        sim3_scale,
+        sim3_R,
+        sim3_t,
+        prev_local_points,
+        cur_local_points_before,
+        cur_local_points_after_sim3,
+        cur_local_points_after_refine,
+        prev_conf,
+        cur_conf,
+        mutual_conf_mask,
+        tgt_sp_graph,
+    ):
+        if not self.debug_alignment:
+            return
+
+        payload = {
+            "sim3_scale": sim3_scale,
+            "sim3_R": sim3_R,
+            "sim3_t": sim3_t,
+            "src_points_overlap": prev_local_points,
+            "tgt_points_before_overlap": cur_local_points_before,
+            "tgt_points_after_sim3_overlap": cur_local_points_after_sim3,
+            "tgt_points_after_refine_overlap": cur_local_points_after_refine,
+            "src_conf_overlap": prev_conf,
+            "tgt_conf_overlap": cur_conf,
+            "mutual_conf_mask": mutual_conf_mask,
+        }
+
+        if tgt_sp_graph:
+            graph_summary = summarize_graph_layer(tgt_sp_graph[0])
+            payload.update(
+                {
+                    "tgt_segment_masks_frame0": graph_summary["masks"],
+                    "tgt_segment_has_scale_frame0": graph_summary["has_scale"],
+                    "tgt_segment_mean_iou_frame0": graph_summary["mean_iou"],
+                    "tgt_segment_mean_scale_frame0": graph_summary["mean_scale"],
+                }
+            )
+
+        self.alignment_debug_recorder.record_pair(
+            pair_index=pair_index,
+            payload=payload,
+            metadata={
+                "segment_mode": self.segment_mode,
+                "normal_method": self.normal_method,
+                "scale_anchor_mode": self.scale_anchor_mode,
+                "window_size": self.window_size,
+                "overlap": self.overlap,
+                "top_conf_percentile": self.top_conf_percentile,
+            },
         )
 
     # 5️⃣ 把当前窗口的 prev_window_cache 保存到磁盘，文件名为 window_cache_{cache_id}.pt
@@ -242,6 +309,7 @@ class StreamingWindowEngine(VanillaEngine):
                 # metric depth align
                 prev_local_points = self.prev_window_cache['local_points'][-self.overlap:]
                 cur_local_points = working_window['local_points'][:self.overlap]
+                cur_local_points_before_sim3 = cur_local_points.clone()
 
                 # 3️⃣ 相邻窗口配准
                 s_d, R, t = register_adjacent_windows(
@@ -255,6 +323,7 @@ class StreamingWindowEngine(VanillaEngine):
                 # 4️⃣ 把Sim3应用到当前窗口（先修正当前窗口局部点云尺度，再修正相机位姿，式当前窗口接到全局轨迹上）
                 working_window['local_points'] = s_d * working_window.pop('local_points')
                 working_window['camera_poses'] = apply_sim3_to_pose(working_window.pop('camera_poses'), s_d, R, t)
+                cur_local_points_after_sim3 = working_window['local_points'][:self.overlap].clone()
 
                 # 🌟5️⃣ 如果开启depth_refine,进入 segment-level depth refinement
                 if self.depth_refine:
@@ -298,6 +367,20 @@ class StreamingWindowEngine(VanillaEngine):
                         )
                     else:
                         raise ValueError(f'Unknown segment_mode: {self.segment_mode}')
+                self._record_alignment_debug_pair(
+                    pair_index=self.cache_id,
+                    sim3_scale=s_d,
+                    sim3_R=R,
+                    sim3_t=t,
+                    prev_local_points=prev_local_points,
+                    cur_local_points_before=cur_local_points_before_sim3,
+                    cur_local_points_after_sim3=cur_local_points_after_sim3,
+                    cur_local_points_after_refine=working_window['local_points'][:self.overlap],
+                    prev_conf=self.prev_window_cache['conf'][-self.overlap:],
+                    cur_conf=working_window['conf'][:self.overlap],
+                    mutual_conf_mask=conf_mask,
+                    tgt_sp_graph=tgt_sp_graph,
+                )
             # 5️⃣第一个窗口分支（没有前窗，所以不做相邻的窗口配准）
             else:
                 # 1️⃣ 初始化：从第一个窗口估计参考内参，后续所有窗口都是用 ref_intrinsic 重新反投影。

@@ -3,6 +3,7 @@ import torch
 
 from inference_engine import streaming_window_engine as swe_module
 from inference_engine.streaming_window_engine import StreamingWindowEngine
+from pi3.utils.graph import Vertex
 
 
 def _engine(
@@ -99,6 +100,63 @@ def test_geometry_segment_graph_uses_geometry_inputs(monkeypatch, tmp_path):
     np.testing.assert_array_equal(kwargs["intrinsic"], intrinsic.numpy())
     assert kwargs["top_conf_percentile"] == engine.top_conf_percentile
     assert kwargs["normal_method"] == "sobel"
+
+
+def test_streaming_engine_alignment_debug_is_default_off(tmp_path):
+    engine = _engine(tmp_path)
+
+    assert engine.debug_alignment is False
+    assert engine.alignment_debug_recorder.enabled is False
+    assert not (tmp_path / "debug").exists()
+
+
+def test_streaming_engine_alignment_debug_record_pair_writes_trace(tmp_path):
+    engine = StreamingWindowEngine(
+        torch.nn.Identity(),
+        inference_device="cpu",
+        dtype=torch.float32,
+        process_device="cpu",
+        window_size=2,
+        overlap=1,
+        depth_refine=True,
+        cache_root=str(tmp_path / "cache"),
+        benchmark_latency=False,
+        segment_mode="geometry",
+        normal_method="cross",
+        debug_alignment=True,
+        debug_alignment_path=str(tmp_path / "debug"),
+        debug_alignment_scene="scene",
+    )
+    tgt_graph = [
+        [
+            Vertex(
+                data=np.array([[True, False], [False, False]]),
+                default_cache={"iou": [0.8], "scale": [1.1]},
+            )
+        ]
+    ]
+
+    engine._record_alignment_debug_pair(
+        pair_index=3,
+        sim3_scale=torch.tensor(1.25),
+        sim3_R=torch.eye(3),
+        sim3_t=torch.zeros(3),
+        prev_local_points=torch.zeros(1, 2, 2, 3),
+        cur_local_points_before=torch.ones(1, 2, 2, 3),
+        cur_local_points_after_sim3=torch.full((1, 2, 2, 3), 2.0),
+        cur_local_points_after_refine=torch.full((1, 2, 2, 3), 3.0),
+        prev_conf=torch.ones(1, 2, 2),
+        cur_conf=torch.full((1, 2, 2), 0.5),
+        mutual_conf_mask=torch.tensor([[[True, False], [True, False]]]),
+        tgt_sp_graph=tgt_graph,
+    )
+
+    trace_path = tmp_path / "debug" / "scene" / "pair_0003.npz"
+    assert trace_path.is_file()
+    arrays = np.load(trace_path)
+    assert arrays["tgt_points_after_refine_overlap"].shape == (1, 2, 2, 3)
+    assert arrays["tgt_segment_masks_frame0"].shape == (1, 2, 2)
+    assert arrays["tgt_segment_has_scale_frame0"].tolist() == [True]
 
 
 def test_registration_worker_uses_geometry_specific_refinement_branch(monkeypatch, tmp_path):
