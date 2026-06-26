@@ -51,14 +51,16 @@ class StreamingWindowEngine(VanillaEngine):
             # ================================
             # 中文：新增分割模式配置。
             # English: New segmentation mode configuration.
-            segment_mode: str = 'depth',
-            normal_method: str = 'cross',
-            scale_anchor_mode: str = 'depth_irls',
-            debug_alignment: bool = False,
-            debug_alignment_path: str | None = None,
-            debug_alignment_scene: str | None = None,
+            segment_mode: str = 'depth',                # 分割方法
+            normal_method: str = 'cross',               # 法线估计方法
+            scale_anchor_mode: str = 'depth_irls',      # 尺度锚点估计方法
+            # 新增的更好的可视化内容的部分(记录功能的入口)
+            debug_alignment: bool = False,              # 是否开启对齐调试记录（默认False）
+            debug_alignment_path: str | None = None,    # 调试文件保存根目录
+            debug_alignment_scene: str | None = None,   # 当前scene的子目录名
             # ================================
     ):
+        # 参数保护
         if segment_mode not in ('depth', 'geometry'):
             raise ValueError(f"Unknown segment_mode: {segment_mode}")
         if scale_anchor_mode not in ('depth_irls', 'conf_weighted_irls'):
@@ -159,9 +161,10 @@ class StreamingWindowEngine(VanillaEngine):
             normal_method=self.normal_method,
         )
 
+    # 🌟 可视化调试：保存Sim3前后，refine后，segment mask/scale/IoU的内容
     def _record_alignment_debug_pair(
         self,
-        *,
+        *,                              # *表示后面参数必须用关键字传入
         pair_index,
         sim3_scale,
         sim3_R,
@@ -175,33 +178,37 @@ class StreamingWindowEngine(VanillaEngine):
         mutual_conf_mask,
         tgt_sp_graph,
     ):
+        # 1️⃣ 开关保护
         if not self.debug_alignment:
             return
 
+        # 2️⃣ 保存核心对齐数据
         payload = {
-            "sim3_scale": sim3_scale,
+            "sim3_scale": sim3_scale,                                               # 当前窗口对齐到前一个窗口时估计出来的 Sim3 变换
             "sim3_R": sim3_R,
             "sim3_t": sim3_t,
-            "src_points_overlap": prev_local_points,
-            "tgt_points_before_overlap": cur_local_points_before,
-            "tgt_points_after_sim3_overlap": cur_local_points_after_sim3,
-            "tgt_points_after_refine_overlap": cur_local_points_after_refine,
-            "src_conf_overlap": prev_conf,
+            "src_points_overlap": prev_local_points,                                # 前一个窗口最后 overlap 帧的点云，也就是 source
+            "tgt_points_before_overlap": cur_local_points_before,                   # 当前窗口最开始 overlap 帧，在做 Sim3 之前的点云。
+            "tgt_points_after_sim3_overlap": cur_local_points_after_sim3,           # 当前窗口做完 Sim3 粗对齐之后的点云
+            "tgt_points_after_refine_overlap": cur_local_points_after_refine,       # 如果开启 segment refinement，这是 refinement 之后的点云；如果没开启，基本就是 Sim3 后的状态
+            "src_conf_overlap": prev_conf,                                          # 前窗和当前窗 overlap 区域的置信度
             "tgt_conf_overlap": cur_conf,
-            "mutual_conf_mask": mutual_conf_mask,
+            "mutual_conf_mask": mutual_conf_mask,                                   # 两边都高置信的区域。这个 mask 是真正参与相邻窗口注册的区域。
         }
 
+        # 3️⃣ 如果有 segment graph，就额外记录 segment 信息 主要用于检查 segment refinement 的可靠性：哪些区域有尺度锚点，哪些没有；尺度是否异常；IoU 是否太低。
         if tgt_sp_graph:
             graph_summary = summarize_graph_layer(tgt_sp_graph[0])
             payload.update(
                 {
-                    "tgt_segment_masks_frame0": graph_summary["masks"],
-                    "tgt_segment_has_scale_frame0": graph_summary["has_scale"],
-                    "tgt_segment_mean_iou_frame0": graph_summary["mean_iou"],
-                    "tgt_segment_mean_scale_frame0": graph_summary["mean_scale"],
+                    "tgt_segment_masks_frame0": graph_summary["masks"],             # 第 0 帧每个 segment 的 mask。
+                    "tgt_segment_has_scale_frame0": graph_summary["has_scale"],     # 这个 segment 有没有拿到 scale anchor。
+                    "tgt_segment_mean_iou_frame0": graph_summary["mean_iou"],       # 这个 segment 和 source segment 匹配时的平均 IoU。
+                    "tgt_segment_mean_scale_frame0": graph_summary["mean_scale"],   # 这个 segment 最终估计到的平均 scale。
                 }
             )
 
+        # 4️⃣ 真正写文件 这里调用 AlignmentDebugRecorder 把数据写出去。
         self.alignment_debug_recorder.record_pair(
             pair_index=pair_index,
             payload=payload,
