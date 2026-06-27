@@ -145,6 +145,9 @@ def test_streaming_engine_alignment_debug_record_pair_writes_trace(tmp_path):
         cur_local_points_before=torch.ones(1, 2, 2, 3),
         cur_local_points_after_sim3=torch.full((1, 2, 2, 3), 2.0),
         cur_local_points_after_refine=torch.full((1, 2, 2, 3), 3.0),
+        prev_camera_poses=torch.eye(4).reshape(1, 4, 4),
+        cur_camera_poses_before=torch.eye(4).reshape(1, 4, 4) * 2.0,
+        cur_camera_poses_after=torch.eye(4).reshape(1, 4, 4) * 3.0,
         prev_conf=torch.ones(1, 2, 2),
         cur_conf=torch.full((1, 2, 2), 0.5),
         mutual_conf_mask=torch.tensor([[[True, False], [True, False]]]),
@@ -155,6 +158,9 @@ def test_streaming_engine_alignment_debug_record_pair_writes_trace(tmp_path):
     assert trace_path.is_file()
     arrays = np.load(trace_path)
     assert arrays["tgt_points_after_refine_overlap"].shape == (1, 2, 2, 3)
+    assert arrays["src_camera_poses_overlap"].shape == (1, 4, 4)
+    assert arrays["tgt_camera_poses_before_overlap"].shape == (1, 4, 4)
+    assert arrays["tgt_camera_poses_after_overlap"].shape == (1, 4, 4)
     assert arrays["tgt_segment_masks_frame0"].shape == (1, 2, 2)
     assert arrays["tgt_segment_has_scale_frame0"].tolist() == [True]
 

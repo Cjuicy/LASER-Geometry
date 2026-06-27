@@ -173,6 +173,9 @@ class StreamingWindowEngine(VanillaEngine):
         cur_local_points_before,
         cur_local_points_after_sim3,
         cur_local_points_after_refine,
+        prev_camera_poses,
+        cur_camera_poses_before,
+        cur_camera_poses_after,
         prev_conf,
         cur_conf,
         mutual_conf_mask,
@@ -191,6 +194,9 @@ class StreamingWindowEngine(VanillaEngine):
             "tgt_points_before_overlap": cur_local_points_before,                   # 当前窗口最开始 overlap 帧，在做 Sim3 之前的点云。
             "tgt_points_after_sim3_overlap": cur_local_points_after_sim3,           # 当前窗口做完 Sim3 粗对齐之后的点云
             "tgt_points_after_refine_overlap": cur_local_points_after_refine,       # 如果开启 segment refinement，这是 refinement 之后的点云；如果没开启，基本就是 Sim3 后的状态
+            "src_camera_poses_overlap": prev_camera_poses,                          # source overlap 的 camera-to-world pose，用于把 local point 转成 world point。
+            "tgt_camera_poses_before_overlap": cur_camera_poses_before,             # target Sim3 前的 pose，用于显示对齐前的偏差。
+            "tgt_camera_poses_after_overlap": cur_camera_poses_after,               # target Sim3/refine 后的 pose，用于显示对齐后的世界坐标点云。
             "src_conf_overlap": prev_conf,                                          # 前窗和当前窗 overlap 区域的置信度
             "tgt_conf_overlap": cur_conf,
             "mutual_conf_mask": mutual_conf_mask,                                   # 两边都高置信的区域。这个 mask 是真正参与相邻窗口注册的区域。
@@ -317,6 +323,8 @@ class StreamingWindowEngine(VanillaEngine):
                 prev_local_points = self.prev_window_cache['local_points'][-self.overlap:]
                 cur_local_points = working_window['local_points'][:self.overlap]
                 cur_local_points_before_sim3 = cur_local_points.clone()
+                prev_camera_poses_overlap = self.prev_window_cache['camera_poses'][-self.overlap:]
+                cur_camera_poses_before_sim3 = working_window['camera_poses'][:self.overlap].clone()
 
                 # 3️⃣ 相邻窗口配准
                 s_d, R, t = register_adjacent_windows(
@@ -331,6 +339,7 @@ class StreamingWindowEngine(VanillaEngine):
                 working_window['local_points'] = s_d * working_window.pop('local_points')
                 working_window['camera_poses'] = apply_sim3_to_pose(working_window.pop('camera_poses'), s_d, R, t)
                 cur_local_points_after_sim3 = working_window['local_points'][:self.overlap].clone()
+                cur_camera_poses_after_sim3 = working_window['camera_poses'][:self.overlap].clone()
 
                 # 🌟5️⃣ 如果开启depth_refine,进入 segment-level depth refinement
                 if self.depth_refine:
@@ -383,6 +392,9 @@ class StreamingWindowEngine(VanillaEngine):
                     cur_local_points_before=cur_local_points_before_sim3,
                     cur_local_points_after_sim3=cur_local_points_after_sim3,
                     cur_local_points_after_refine=working_window['local_points'][:self.overlap],
+                    prev_camera_poses=prev_camera_poses_overlap,
+                    cur_camera_poses_before=cur_camera_poses_before_sim3,
+                    cur_camera_poses_after=cur_camera_poses_after_sim3,
                     prev_conf=self.prev_window_cache['conf'][-self.overlap:],
                     cur_conf=working_window['conf'][:self.overlap],
                     mutual_conf_mask=conf_mask,
