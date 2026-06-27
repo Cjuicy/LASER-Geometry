@@ -91,9 +91,16 @@ geometry ATE, confidence quantile, and point cap. Without ground truth it keeps
 the current first-frame-alignment text and omits ATE values and ground-truth
 controls.
 
+The Display folder also provides `Fit full trajectory`. It restores the camera
+after arbitrary wheel zooming and is independent of the selected frame or
+visibility preset.
+
 ## Camera and Resource Behavior
 
-Automatic camera bounds include the ground-truth trajectory when present.
+Automatic camera bounds use the complete min/max extent of every visible-method
+trajectory, including both endpoints. The camera stays inside Viser's useful
+clipping distance and uses a wide field of view so the complete trajectory fits
+beside the GUI panel. Point-cloud outliers do not determine this camera.
 Overview point clouds retain the existing per-method streaming point cap. Only
 the two predicted current-frame detail clouds are replaced on frame changes, so
 adding ground truth has negligible browser memory cost.
@@ -127,4 +134,5 @@ ground-truth stride: 10
 ```
 
 The browser check exercises all three quick comparisons, each single-trajectory
-view, the all-three view, and frames 0, 80, and 159 with no console errors.
+view, the all-three view, frames 0, 80, and 159, wheel zoom recovery through
+`Fit full trajectory`, and the original no-ground-truth mode.

@@ -14,12 +14,19 @@ from pathlib import Path
 
 import imageio.v3 as iio
 import numpy as np
+from evo.core.geometry import umeyama_alignment
 from scipy.spatial.transform import Rotation
 
 
 _TRAILING_NUMBER = re.compile(r"(\d+)(?=\D*$)")
 _BASELINE_COLOR = (65, 145, 255)
 _GEOMETRY_COLOR = (60, 220, 125)
+_GROUND_TRUTH_COLOR = (110, 110, 110)
+_COMPARISON_VISIBILITY = {
+    "GT vs Baseline": (True, True, False),
+    "GT vs Geometry": (True, False, True),
+    "Baseline vs Geometry": (False, True, True),
+}
 
 
 def numeric_paths(directory: Path | str, pattern: str) -> list[Path]:
@@ -34,6 +41,19 @@ def numeric_paths(directory: Path | str, pattern: str) -> list[Path]:
     return sorted(Path(directory).glob(pattern), key=key)
 
 
+def comparison_visibility(preset: str) -> tuple[bool, bool, bool]:
+    """Return Ground Truth, baseline, and geometry visibility for a preset."""
+    try:
+        return _COMPARISON_VISIBILITY[preset]
+    except KeyError as error:
+        raise ValueError(f"Unknown comparison preset: {preset}") from error
+
+
+def register_comparison_callback(button_group, callback):
+    """Register a Viser button-group callback using its click-only API."""
+    return button_group.on_click(callback)
+
+
 def load_tum_poses(path: Path | str) -> np.ndarray:
     """Load timestamp/translation/quaternion-wxyz rows as camera-to-world poses."""
     rows = np.atleast_2d(np.loadtxt(path, dtype=np.float32))
@@ -46,6 +66,34 @@ def load_tum_poses(path: Path | str) -> np.ndarray:
     poses[:, :3, :3] = Rotation.from_quat(quat_xyzw).as_matrix().astype(np.float32)
     poses[:, :3, 3] = rows[:, 1:4]
     return poses
+
+
+def load_kitti_poses(path: Path | str) -> np.ndarray:
+    """Load KITTI camera-to-world 3x4 rows as homogeneous poses."""
+    rows = np.atleast_2d(np.loadtxt(path, dtype=np.float32))
+    if rows.shape[1] != 12:
+        raise ValueError(
+            f"Expected 12 columns in KITTI trajectory {path}, got {rows.shape[1]}"
+        )
+    poses = np.repeat(np.eye(4, dtype=np.float32)[None], len(rows), axis=0)
+    poses[:, :3, :] = rows.reshape(-1, 3, 4)
+    return poses
+
+
+def sample_ground_truth(
+    poses: np.ndarray, *, stride: int, expected_count: int
+) -> np.ndarray:
+    """Stride-sample ground truth and require exact prediction correspondence."""
+    if stride <= 0:
+        raise ValueError("ground-truth stride must be positive")
+    poses = np.asarray(poses, dtype=np.float32)
+    sampled = poses[::stride]
+    if len(sampled) != expected_count:
+        raise ValueError(
+            f"sampled ground-truth count {len(sampled)} from {len(poses)} poses "
+            f"with stride {stride}; expected {expected_count}"
+        )
+    return sampled
 
 
 def load_run(directory: Path | str) -> dict[str, object]:
@@ -93,6 +141,67 @@ def align_geometry_to_baseline(
         raise ValueError("Cannot align empty trajectories")
     alignment = baseline_poses[0] @ np.linalg.inv(geometry_poses[0])
     return (alignment[None] @ geometry_poses).astype(np.float32)
+
+
+def apply_similarity_to_points(
+    points: np.ndarray, similarity: tuple[np.ndarray, np.ndarray, float]
+) -> np.ndarray:
+    """Apply a world-space Sim(3) to arbitrary XYZ points."""
+    rotation, translation, scale = similarity
+    points = np.asarray(points, dtype=np.float32)
+    return (scale * (points @ rotation.T) + translation).astype(np.float32)
+
+
+def apply_similarity_to_poses(
+    poses: np.ndarray, similarity: tuple[np.ndarray, np.ndarray, float]
+) -> np.ndarray:
+    """Apply a world-space Sim(3) to camera-to-world poses."""
+    rotation, _, _ = similarity
+    aligned = np.asarray(poses, dtype=np.float32).copy()
+    aligned[:, :3, 3] = apply_similarity_to_points(aligned[:, :3, 3], similarity)
+    aligned[:, :3, :3] = rotation[None] @ aligned[:, :3, :3]
+    return aligned
+
+
+def align_poses_sim3(
+    prediction: np.ndarray, reference: np.ndarray
+) -> tuple[np.ndarray, tuple[np.ndarray, np.ndarray, float]]:
+    """Independently align one predicted trajectory to a reference with Sim(3)."""
+    prediction = np.asarray(prediction, dtype=np.float32)
+    reference = np.asarray(reference, dtype=np.float32)
+    if prediction.shape != reference.shape or prediction.ndim != 3:
+        raise ValueError(
+            "Prediction and reference poses must have the same Nx4x4 shape"
+        )
+    try:
+        rotation, translation, scale = umeyama_alignment(
+            prediction[:, :3, 3].T,
+            reference[:, :3, 3].T,
+            with_scale=True,
+        )
+    except Exception as error:
+        raise ValueError(f"Could not solve finite Sim(3) alignment: {error}") from error
+    if not (
+        np.isfinite(rotation).all()
+        and np.isfinite(translation).all()
+        and np.isfinite(scale)
+    ):
+        raise ValueError("Could not solve finite Sim(3) alignment")
+    similarity = (
+        np.asarray(rotation, dtype=np.float32),
+        np.asarray(translation, dtype=np.float32),
+        float(scale),
+    )
+    return apply_similarity_to_poses(prediction, similarity), similarity
+
+
+def translation_ate(prediction: np.ndarray, reference: np.ndarray) -> float:
+    """Return translation RMSE for already-associated, already-aligned poses."""
+    errors = (
+        np.asarray(prediction, dtype=np.float64)[:, :3, 3]
+        - np.asarray(reference, dtype=np.float64)[:, :3, 3]
+    )
+    return float(np.sqrt(np.mean(np.sum(errors * errors, axis=1))))
 
 
 def unproject_depth(depth: np.ndarray, intrinsic: np.ndarray) -> np.ndarray:
@@ -146,6 +255,7 @@ def frame_cloud(
     *,
     conf_quantile: float,
     pixel_stride: int,
+    similarity: tuple[np.ndarray, np.ndarray, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build one confidence-filtered RGB point cloud in world coordinates."""
     if not 0 <= frame_index < int(run["num_frames"]):
@@ -179,6 +289,8 @@ def frame_cloud(
 
     pose = np.asarray(poses[frame_index], dtype=np.float32)
     points_world = points_camera @ pose[:3, :3].T + pose[:3, 3]
+    if similarity is not None:
+        points_world = apply_similarity_to_points(points_world, similarity)
     return points_world[valid].astype(np.float32), rgb[valid].astype(np.uint8)
 
 
@@ -191,6 +303,7 @@ def overview_cloud(
     frame_stride: int,
     max_points: int,
     seed: int,
+    similarity: tuple[np.ndarray, np.ndarray, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Stream all selected frames into one deterministic global reservoir."""
     if max_points <= 0:
@@ -207,6 +320,7 @@ def overview_cloud(
             frame_index,
             conf_quantile=conf_quantile,
             pixel_stride=pixel_stride,
+            similarity=similarity,
         )
         if not len(points):
             continue
@@ -229,22 +343,32 @@ def overview_cloud(
 
 
 def overview_camera(points: np.ndarray) -> dict[str, np.ndarray | float]:
-    """Choose a stable camera from robust scene bounds."""
+    """Choose a camera that contains every supplied trajectory endpoint."""
     points = np.asarray(points, dtype=np.float32).reshape(-1, 3)
     finite_points = points[np.isfinite(points).all(axis=1)]
     if not len(finite_points):
         finite_points = np.zeros((1, 3), dtype=np.float32)
-    low, high = np.percentile(finite_points, [2, 98], axis=0)
+    low = finite_points.min(axis=0)
+    high = finite_points.max(axis=0)
     center = ((low + high) * 0.5).astype(np.float32)
     extent = max(float(np.linalg.norm(high - low)), 1.0)
     direction = np.array([0.8, -0.55, -0.75], dtype=np.float32)
     direction /= np.linalg.norm(direction)
     return {
         "look_at": center,
-        "position": center + direction * extent * 1.35,
+        "position": center + direction * extent * 0.9,
         "up_direction": np.array([0.0, -1.0, 0.0], dtype=np.float32),
-        "fov": 0.9,
+        "fov": 1.8,
     }
+
+
+def apply_camera_spec(client, spec: dict[str, np.ndarray | float]) -> None:
+    """Apply one overview camera specification to a connected Viser client."""
+    with client.atomic():
+        client.camera.position = spec["position"]
+        client.camera.look_at = spec["look_at"]
+        client.camera.up_direction = spec["up_direction"]
+        client.camera.fov = spec["fov"]
 
 
 def _add_trajectory(server, name: str, poses: np.ndarray, color) -> list[object]:
@@ -284,30 +408,68 @@ def build_viewer(args: argparse.Namespace):
             f"{baseline['num_frames']} vs {geometry['num_frames']}"
         )
 
-    baseline_poses = baseline["poses"]
-    geometry_poses = align_geometry_to_baseline(baseline_poses, geometry["poses"])
+    baseline_saved_poses = np.asarray(baseline["poses"], dtype=np.float32)
+    geometry_saved_poses = np.asarray(geometry["poses"], dtype=np.float32)
+    ground_truth_poses = None
+    baseline_similarity = None
+    geometry_similarity = None
+    baseline_ate = None
+    geometry_ate = None
+    if args.gt_traj is not None:
+        if args.gt_format != "kitti":
+            raise ValueError(f"Unsupported ground-truth format: {args.gt_format}")
+        ground_truth_poses = sample_ground_truth(
+            load_kitti_poses(args.gt_traj),
+            stride=args.gt_stride,
+            expected_count=int(baseline["num_frames"]),
+        )
+        baseline_poses, baseline_similarity = align_poses_sim3(
+            baseline_saved_poses, ground_truth_poses
+        )
+        geometry_poses, geometry_similarity = align_poses_sim3(
+            geometry_saved_poses, ground_truth_poses
+        )
+        baseline_cloud_poses = baseline_saved_poses
+        geometry_cloud_poses = geometry_saved_poses
+        baseline_ate = translation_ate(baseline_poses, ground_truth_poses)
+        geometry_ate = translation_ate(geometry_poses, ground_truth_poses)
+    else:
+        baseline_poses = baseline_saved_poses
+        geometry_poses = align_geometry_to_baseline(
+            baseline_poses, geometry_saved_poses
+        )
+        baseline_cloud_poses = baseline_poses
+        geometry_cloud_poses = geometry_poses
+
     print(
         f"Loading complete trajectories: {baseline['num_frames']} frames per method"
     )
+    if ground_truth_poses is not None:
+        print(
+            f"Independent Sim(3) ATE: baseline={baseline_ate:.6f}, "
+            f"geometry={geometry_ate:.6f}"
+        )
     print("Building baseline overview cloud...")
     baseline_points, baseline_colors = overview_cloud(
         baseline,
-        baseline_poses,
+        baseline_cloud_poses,
         conf_quantile=args.conf_quantile,
         pixel_stride=args.pixel_stride,
         frame_stride=args.frame_stride,
         max_points=args.max_points,
         seed=17,
+        similarity=baseline_similarity,
     )
     print("Building geometry overview cloud...")
     geometry_points, geometry_colors = overview_cloud(
         geometry,
-        geometry_poses,
+        geometry_cloud_poses,
         conf_quantile=args.conf_quantile,
         pixel_stride=args.pixel_stride,
         frame_stride=args.frame_stride,
         max_points=args.max_points,
         seed=29,
+        similarity=geometry_similarity,
     )
 
     server = viser.ViserServer(port=args.port)
@@ -318,6 +480,11 @@ def build_viewer(args: argparse.Namespace):
     geometry_trajectory = _add_trajectory(
         server, "geometry", geometry_poses, _GEOMETRY_COLOR
     )
+    ground_truth_trajectory = []
+    if ground_truth_poses is not None:
+        ground_truth_trajectory = _add_trajectory(
+            server, "ground_truth", ground_truth_poses, _GROUND_TRUTH_COLOR
+        )
     baseline_overview = server.scene.add_point_cloud(
         "/baseline/overview_rgb",
         baseline_points,
@@ -333,14 +500,29 @@ def build_viewer(args: argparse.Namespace):
         point_shape="rounded",
     )
 
-    server.gui.add_markdown(
-        "**Full trajectory comparison**  \n"
-        f"Frames: `{baseline['num_frames']}`  \n"
-        "Blue: LASER baseline; green: LASER-Geometry  \n"
-        "Alignment: geometry frame 0 to baseline frame 0  \n"
-        f"Confidence quantile: `{args.conf_quantile:.2f}`  \n"
-        f"Overview cap: `{args.max_points:,}` points/method"
-    )
+    if ground_truth_poses is not None:
+        info = (
+            "**Full trajectory comparison**  \n"
+            f"Frames: `{baseline['num_frames']}`  \n"
+            "Gray: Ground Truth; blue: LASER baseline; green: LASER-Geometry  \n"
+            "Alignment: independent Sim(3) to Ground Truth  \n"
+            "ATE alignment is global; frame 0 is not forced to coincide  \n"
+            f"LASER baseline ATE: `{baseline_ate:.6f}`  \n"
+            f"LASER-Geometry ATE: `{geometry_ate:.6f}`  \n"
+            f"Confidence quantile: `{args.conf_quantile:.2f}`  \n"
+            f"Overview cap: `{args.max_points:,}` points/method"
+        )
+    else:
+        info = (
+            "**Full trajectory comparison**  \n"
+            f"Frames: `{baseline['num_frames']}`  \n"
+            "Blue: LASER baseline; green: LASER-Geometry  \n"
+            "Alignment: geometry frame 0 to baseline frame 0  \n"
+            f"Confidence quantile: `{args.conf_quantile:.2f}`  \n"
+            f"Overview cap: `{args.max_points:,}` points/method"
+        )
+    server.gui.add_markdown(info)
+
     with server.gui.add_folder("Display"):
         frame_slider = server.gui.add_slider(
             "Frame",
@@ -349,10 +531,30 @@ def build_viewer(args: argparse.Namespace):
             step=1,
             initial_value=0,
         )
-        show_baseline = server.gui.add_checkbox("Baseline", initial_value=True)
-        show_geometry = server.gui.add_checkbox("Geometry", initial_value=True)
+        quick_comparison = None
+        show_ground_truth = None
+        if ground_truth_poses is not None:
+            quick_comparison = server.gui.add_button_group(
+                "Quick comparison", tuple(_COMPARISON_VISIBILITY)
+            )
+            initial_gt, initial_baseline, initial_geometry = comparison_visibility(
+                quick_comparison.value
+            )
+            show_ground_truth = server.gui.add_checkbox(
+                "Ground Truth", initial_value=initial_gt
+            )
+        else:
+            initial_baseline = True
+            initial_geometry = True
+        show_baseline = server.gui.add_checkbox(
+            "LASER baseline", initial_value=initial_baseline
+        )
+        show_geometry = server.gui.add_checkbox(
+            "LASER-Geometry", initial_value=initial_geometry
+        )
         show_overview = server.gui.add_checkbox("Overview clouds", initial_value=True)
         show_detail = server.gui.add_checkbox("Current-frame detail", initial_value=True)
+        fit_trajectory = server.gui.add_button("Fit full trajectory")
 
     detail_handles: dict[str, object | None] = {"baseline": None, "geometry": None}
 
@@ -367,17 +569,19 @@ def build_viewer(args: argparse.Namespace):
 
         baseline_detail = frame_cloud(
             baseline,
-            baseline_poses,
+            baseline_cloud_poses,
             frame_index,
             conf_quantile=args.conf_quantile,
             pixel_stride=args.detail_pixel_stride,
+            similarity=baseline_similarity,
         )
         geometry_detail = frame_cloud(
             geometry,
-            geometry_poses,
+            geometry_cloud_poses,
             frame_index,
             conf_quantile=args.conf_quantile,
             pixel_stride=args.detail_pixel_stride,
+            similarity=geometry_similarity,
         )
         with server.atomic():
             detail_handles["baseline"] = server.scene.add_point_cloud(
@@ -398,6 +602,9 @@ def build_viewer(args: argparse.Namespace):
             )
 
     def update_visibility() -> None:
+        if show_ground_truth is not None:
+            for handle in ground_truth_trajectory:
+                handle.visible = show_ground_truth.value
         baseline_overview.visible = show_baseline.value and show_overview.value
         geometry_overview.visible = show_geometry.value and show_overview.value
         for handle in baseline_trajectory:
@@ -412,6 +619,24 @@ def build_viewer(args: argparse.Namespace):
     @frame_slider.on_update
     def _(_) -> None:
         render_detail(int(frame_slider.value))
+
+    if quick_comparison is not None:
+        def apply_quick_comparison(_) -> None:
+            gt_visible, baseline_visible, geometry_visible = comparison_visibility(
+                quick_comparison.value
+            )
+            with server.atomic():
+                show_ground_truth.value = gt_visible
+                show_baseline.value = baseline_visible
+                show_geometry.value = geometry_visible
+            update_visibility()
+
+        register_comparison_callback(quick_comparison, apply_quick_comparison)
+
+    if show_ground_truth is not None:
+        @show_ground_truth.on_update
+        def _(_) -> None:
+            update_visibility()
 
     @show_baseline.on_update
     def _(_) -> None:
@@ -430,20 +655,25 @@ def build_viewer(args: argparse.Namespace):
         render_detail(int(frame_slider.value))
 
     bounds_parts = [baseline_poses[:, :3, 3], geometry_poses[:, :3, 3]]
-    if len(baseline_points):
-        bounds_parts.append(baseline_points)
-    if len(geometry_points):
-        bounds_parts.append(geometry_points)
+    if ground_truth_poses is not None:
+        bounds_parts.append(ground_truth_poses[:, :3, 3])
     camera_spec = overview_camera(np.concatenate(bounds_parts))
+
+    @fit_trajectory.on_click
+    def _(event) -> None:
+        clients = (
+            [event.client]
+            if event.client is not None
+            else list(server.get_clients().values())
+        )
+        for client in clients:
+            apply_camera_spec(client, camera_spec)
 
     @server.on_client_connect
     def _(client) -> None:
-        with client.atomic():
-            client.camera.position = camera_spec["position"]
-            client.camera.look_at = camera_spec["look_at"]
-            client.camera.up_direction = camera_spec["up_direction"]
-            client.camera.fov = camera_spec["fov"]
+        apply_camera_spec(client, camera_spec)
 
+    update_visibility()
     render_detail(0)
     print(
         f"Viewer ready: http://127.0.0.1:{args.port}/ "
@@ -458,6 +688,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--baseline_dir", type=Path, required=True)
     parser.add_argument("--geometry_dir", type=Path, required=True)
+    parser.add_argument("--gt_traj", type=Path)
+    parser.add_argument("--gt_format", choices=("kitti",), default="kitti")
+    parser.add_argument("--gt_stride", type=int, default=1)
     parser.add_argument("--port", type=int, default=8099)
     parser.add_argument("--max_points", type=int, default=200_000)
     parser.add_argument("--pixel_stride", type=int, default=4)
@@ -469,7 +702,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if not 0.0 <= args.conf_quantile <= 1.0:
         parser.error("--conf_quantile must be within [0, 1]")
-    for name in ("max_points", "pixel_stride", "detail_pixel_stride", "frame_stride"):
+    for name in (
+        "max_points",
+        "pixel_stride",
+        "detail_pixel_stride",
+        "frame_stride",
+        "gt_stride",
+    ):
         if getattr(args, name) <= 0:
             parser.error(f"--{name} must be positive")
     return args

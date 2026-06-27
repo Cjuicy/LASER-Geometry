@@ -32,6 +32,29 @@ def test_load_tum_poses_parses_wxyz(tmp_path):
     ], dtype=np.float32))
 
 
+def test_load_kitti_poses_builds_homogeneous_matrices(tmp_path):
+    viewer = _load_module()
+    path = tmp_path / "09.txt"
+    np.savetxt(path, [[1, 0, 0, 2, 0, 1, 0, 3, 0, 0, 1, 4]])
+
+    poses = viewer.load_kitti_poses(path)
+
+    np.testing.assert_allclose(poses[0], np.array([
+        [1, 0, 0, 2], [0, 1, 0, 3], [0, 0, 1, 4], [0, 0, 0, 1]
+    ], dtype=np.float32))
+
+
+def test_sample_ground_truth_requires_exact_count():
+    viewer = _load_module()
+    poses = np.repeat(np.eye(4, dtype=np.float32)[None], 21, axis=0)
+
+    sampled = viewer.sample_ground_truth(poses, stride=2, expected_count=11)
+
+    assert len(sampled) == 11
+    with pytest.raises(ValueError, match="sampled ground-truth count"):
+        viewer.sample_ground_truth(poses, stride=3, expected_count=11)
+
+
 def test_align_geometry_matches_first_baseline_pose():
     viewer = _load_module()
     baseline = np.repeat(np.eye(4, dtype=np.float32)[None], 2, axis=0)
@@ -41,6 +64,34 @@ def test_align_geometry_matches_first_baseline_pose():
     aligned = viewer.align_geometry_to_baseline(baseline, geometry)
     np.testing.assert_allclose(aligned[0], baseline[0])
     np.testing.assert_allclose(aligned[1, :3, 3], [4.0, 3.0, 0.0])
+
+
+def test_align_sim3_transforms_poses_points_and_computes_ate():
+    viewer = _load_module()
+    rotation = np.array(
+        [[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=np.float32
+    )
+    translation = np.array([4, -2, 1], dtype=np.float32)
+    scale = 2.0
+    prediction = np.repeat(np.eye(4, dtype=np.float32)[None], 4, axis=0)
+    prediction[:, :3, 3] = [
+        [0, 0, 0], [1, 0, 0], [0, 2, 0], [0, 0, 3]
+    ]
+    reference = prediction.copy()
+    reference[:, :3, 3] = (
+        scale * (prediction[:, :3, 3] @ rotation.T) + translation
+    )
+    reference[:, :3, :3] = rotation
+
+    aligned, similarity = viewer.align_poses_sim3(prediction, reference)
+
+    np.testing.assert_allclose(aligned, reference, atol=1e-5)
+    assert viewer.translation_ate(aligned, reference) == pytest.approx(0.0, abs=1e-5)
+    point = np.array([[1, 2, 3]], dtype=np.float32)
+    transformed = viewer.apply_similarity_to_points(point, similarity)
+    np.testing.assert_allclose(
+        transformed, scale * (point @ rotation.T) + translation, atol=1e-5
+    )
 
 
 def test_unproject_depth_uses_intrinsics():
@@ -89,11 +140,86 @@ def test_frame_cloud_preserves_confident_point_color_pair(tmp_path):
     np.testing.assert_array_equal(colors, [[40, 0, 0]])
 
 
+def test_frame_cloud_applies_world_similarity(tmp_path):
+    viewer = _load_module()
+    rgb = np.full((2, 2, 3), 50, dtype=np.uint8)
+    viewer.iio.imwrite(tmp_path / "frame_0000.png", rgb)
+    np.save(tmp_path / "frame_0000.npy", np.ones((2, 2), dtype=np.float32))
+    np.save(tmp_path / "conf_0.npy", np.ones((2, 2), dtype=np.float32))
+    run = {
+        "rgb_paths": [tmp_path / "frame_0000.png"],
+        "depth_paths": [tmp_path / "frame_0000.npy"],
+        "conf_paths": [tmp_path / "conf_0.npy"],
+        "intrinsics": np.eye(3, dtype=np.float32)[None],
+        "num_frames": 1,
+    }
+    poses = np.eye(4, dtype=np.float32)[None]
+    similarity = (
+        np.eye(3, dtype=np.float32),
+        np.array([1, 2, 3], dtype=np.float32),
+        2.0,
+    )
+
+    points, _ = viewer.frame_cloud(
+        run,
+        poses,
+        0,
+        conf_quantile=0.0,
+        pixel_stride=2,
+        similarity=similarity,
+    )
+
+    np.testing.assert_allclose(points, [[1, 2, 5]])
+
+
 def test_overview_camera_centers_bounds():
     viewer = _load_module()
     spec = viewer.overview_camera(np.array([[-2, -1, -4], [2, 3, 0]], dtype=np.float32))
     np.testing.assert_allclose(spec["look_at"], [0, 1, -2])
     assert np.linalg.norm(spec["position"] - spec["look_at"]) > 4
+
+
+def test_overview_camera_keeps_complete_trajectory_endpoints():
+    viewer = _load_module()
+    points = np.array([[0, 0, 0], [1, 0, 0], [100, 0, 0]], dtype=np.float32)
+
+    spec = viewer.overview_camera(points)
+
+    np.testing.assert_allclose(spec["look_at"], [50, 0, 0])
+    assert np.linalg.norm(spec["position"] - spec["look_at"]) <= 100
+    assert spec["fov"] >= 1.7
+
+
+@pytest.mark.parametrize(
+    ("preset", "expected"),
+    [
+        ("GT vs Baseline", (True, True, False)),
+        ("GT vs Geometry", (True, False, True)),
+        ("Baseline vs Geometry", (False, True, True)),
+    ],
+)
+def test_comparison_visibility(preset, expected):
+    viewer = _load_module()
+    assert viewer.comparison_visibility(preset) == expected
+
+
+def test_register_comparison_callback_uses_button_click_event():
+    viewer = _load_module()
+
+    class ButtonGroup:
+        callback = None
+
+        def on_click(self, callback):
+            self.callback = callback
+            return callback
+
+    button_group = ButtonGroup()
+    callback = lambda _: None
+
+    registered = viewer.register_comparison_callback(button_group, callback)
+
+    assert registered is callback
+    assert button_group.callback is callback
 
 
 def test_load_run_rejects_mismatched_counts(tmp_path):
