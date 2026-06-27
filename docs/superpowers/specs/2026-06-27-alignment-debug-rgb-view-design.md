@@ -17,8 +17,8 @@ mode reads the original local image sequence only when explicitly requested.
 - `--sample_interval`: image sampling interval used by the cloud run.
 - `--layer_mode rgb`: show the refined target point cloud with RGB colors and
   retain only points selected by `mutual_conf_mask`.
-- `--camera_view source`: initialize the browser from the selected overlap
-  frame camera pose so the point cloud is recognizable as a scene.
+- `--camera_view source`: initialize detailed mode from the selected overlap
+  frame camera pose; all-pairs mode automatically uses a fitted overview.
 - `--all_pairs`: aggregate the RGB high-confidence regions from every recorded
   alignment pair instead of selecting one pair with `--pair_index`.
 
@@ -56,10 +56,11 @@ RGB colors are attached to `tgt_points_after_refine_overlap`. The
 camera frustum and obscure the road, vegetation, and object boundaries.
 
 In comparison mode, baseline and geometry retain separate scene-tree folders
-and the configured comparison offset. Source-camera view uses the selected
-target pose and a wider field of view so the two offset scenes remain visible.
-The original solid-color alignment layers remain unchanged for inspecting
-before/Sim3/refine states.
+and the configured comparison offset. Detailed source-camera view uses the
+selected target pose. All-pairs mode computes robust bounds from both displayed
+clouds after their comparison offsets, then initializes an oblique overview so
+all recorded regions enter the first view. The original solid-color alignment
+layers remain unchanged for inspecting before/Sim3/refine states.
 
 Detailed mode keeps the current single-pair behavior. Sequence-alignment mode
 concatenates the high-confidence RGB points from all pairs into one cloud per
@@ -82,7 +83,7 @@ Automated tests cover:
 - RGB point-map shape and frame selection;
 - mutual-confidence filtering while preserving point/color alignment;
 - argument validation for RGB mode;
-- source-camera pose selection with comparison offsets;
+- source-camera pose selection and all-pairs overview bounds;
 - all-pairs aggregation and a global per-method point cap.
 
 Manual verification opens the existing KITTI 09 depth/geometry traces in Viser
