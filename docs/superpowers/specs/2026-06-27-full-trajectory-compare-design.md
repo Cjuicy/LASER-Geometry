@@ -43,7 +43,8 @@ confidence filtering keeps values at or above a configurable quantile.
 The viewer has two complementary representations:
 
 1. **Overview:** all frames contribute downsampled, high-confidence points.
-   Deterministic global sampling applies one `--max_points` cap per method.
+Deterministic streaming global sampling applies one `--max_points` cap per
+method without first holding every sequence point in memory.
 2. **Frame detail:** a GUI slider shows one full-detail frame per method. On a
    slider update, the previous two detail point-cloud nodes are removed and
    replaced, so browser memory does not grow with sequence length.
@@ -54,9 +55,10 @@ The viewer has two complementary representations:
 
 Both complete camera-center trajectories are shown as separate colored splines,
 with small start markers. GUI controls provide frame selection, overview
-visibility, baseline visibility, geometry visibility, and confidence quantile.
-The information panel reports frame count, alignment rule, and active point
-caps.
+visibility, baseline visibility, and geometry visibility. The confidence
+quantile is fixed by the CLI for the session so both methods always use the
+same filter. The information panel reports frame count, alignment rule,
+confidence quantile, and active point caps.
 
 An automatic overview camera uses robust bounds from both trajectory lines and
 overview point clouds. Baseline and geometry stay in the same coordinate system;
