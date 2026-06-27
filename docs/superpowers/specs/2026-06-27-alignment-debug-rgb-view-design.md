@@ -19,6 +19,8 @@ mode reads the original local image sequence only when explicitly requested.
   retain only points selected by `mutual_conf_mask`.
 - `--camera_view source`: initialize the browser from the selected overlap
   frame camera pose so the point cloud is recognizable as a scene.
+- `--all_pairs`: aggregate the RGB high-confidence regions from every recorded
+  alignment pair instead of selecting one pair with `--pair_index`.
 
 When `--layer_mode rgb` is selected, `--image_dir` is required. Existing modes
 do not require image files and preserve their current behavior.
@@ -41,6 +43,12 @@ Images are loaded through the project's existing
 maps exactly. A clear error is raised if metadata, images, or shapes do not
 match.
 
+In `--all_pairs` mode, the mapping is evaluated independently for each trace.
+For the current KITTI 09 data this covers seven disjoint alignment regions,
+each containing ten sampled overlap frames. It intentionally does not claim to
+represent the 90 sampled non-overlap frames that are absent from the debug
+traces.
+
 ## Rendering
 
 RGB colors are attached to `tgt_points_after_refine_overlap`. The
@@ -52,6 +60,13 @@ and the configured comparison offset. Source-camera view uses the selected
 target pose and a wider field of view so the two offset scenes remain visible.
 The original solid-color alignment layers remain unchanged for inspecting
 before/Sim3/refine states.
+
+Detailed mode keeps the current single-pair behavior. Sequence-alignment mode
+concatenates the high-confidence RGB points from all pairs into one cloud per
+method, then applies `--max_points` once per method. Sampling is deterministic,
+so baseline and geometry remain stable between viewer runs. With the existing
+default cap, the browser receives at most 200,000 points per method rather than
+the approximately 1.4 million mutual-confidence points stored per method.
 
 ## Isolation
 
@@ -67,8 +82,12 @@ Automated tests cover:
 - RGB point-map shape and frame selection;
 - mutual-confidence filtering while preserving point/color alignment;
 - argument validation for RGB mode;
-- source-camera pose selection with comparison offsets.
+- source-camera pose selection with comparison offsets;
+- all-pairs aggregation and a global per-method point cap.
 
 Manual verification opens the existing KITTI 09 depth/geometry traces in Viser
 and confirms that road, roadside structures, and vegetation are recognizable,
-while baseline and geometry stay separately toggleable.
+while baseline and geometry stay separately toggleable. It verifies both a
+single detailed pair and all seven alignment regions. Viewing the complete
+160-frame sampled reconstruction remains the responsibility of the standard
+`outputs/viser` data and is outside this debug-view change.
