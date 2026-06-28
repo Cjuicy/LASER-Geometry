@@ -126,6 +126,13 @@ LASER-Geometry ATE: 19.353710
 三个轨迹开关可以任意组合，因此也支持单独查看任意一条轨迹，或者三条
 轨迹同时显示。
 
+逐帧播放控制：
+
+- `Play`：从当前帧开始自动播放，末帧之后回到第 0 帧；
+- `Pause`：暂停播放并保留当前帧；
+- `Playback FPS`：调节播放速度，默认 2 FPS；
+- `Frame`：播放中仍可手动拖动，之后会从选择的新帧继续播放。
+
 滚轮缩放后如果无法看到全貌，点击：
 
 ```text
@@ -154,11 +161,7 @@ Fit full trajectory
 cd ~/autodl-tmp/LASER-Geometry-main
 git stash push -m "autodl-before-viser-update"
 git pull --ff-only origin main
-git rev-parse --short HEAD
+git log -1 --oneline
 ```
 
-包含三轨迹与 ATE 可视化的提交应为：
-
-```text
-811892e
-```
+确认最新提交信息包含轨迹播放控件后，再启动本地 Viser。

@@ -222,6 +222,113 @@ def test_register_comparison_callback_uses_button_click_event():
     assert button_group.callback is callback
 
 
+def test_playback_controller_advances_wraps_and_uses_manual_frame():
+    viewer = _load_module()
+    state = {"frame": 1, "fps": 2.0}
+    controller = viewer.PlaybackController(
+        frame_count=3,
+        get_frame=lambda: state["frame"],
+        set_frame=lambda value: state.__setitem__("frame", value),
+        get_fps=lambda: state["fps"],
+    )
+    try:
+        assert controller.advance_once() == 2
+        assert state["frame"] == 2
+        assert controller.advance_once() == 0
+        state["frame"] = 1
+        assert controller.advance_once() == 2
+    finally:
+        controller.stop()
+
+
+def test_playback_controller_play_pause_are_idempotent():
+    viewer = _load_module()
+    state = {"frame": 0}
+    controller = viewer.PlaybackController(
+        frame_count=2,
+        get_frame=lambda: state["frame"],
+        set_frame=lambda value: state.__setitem__("frame", value),
+        get_fps=lambda: 0.5,
+    )
+    try:
+        worker = controller._worker
+        controller.play()
+        controller.play()
+        assert controller.is_playing
+        assert controller._worker is worker
+        controller.pause()
+        controller.pause()
+        assert not controller.is_playing
+        assert state["frame"] == 0
+    finally:
+        controller.stop()
+
+
+def test_playback_controller_worker_advances_while_playing():
+    viewer = _load_module()
+    advanced = viewer.threading.Event()
+    state = {"frame": 0}
+
+    def set_frame(value):
+        state["frame"] = value
+        advanced.set()
+
+    controller = viewer.PlaybackController(
+        frame_count=3,
+        get_frame=lambda: state["frame"],
+        set_frame=set_frame,
+        get_fps=lambda: 10.0,
+    )
+    try:
+        controller.play()
+        assert advanced.wait(timeout=1.0)
+        assert state["frame"] == 1
+    finally:
+        controller.stop()
+
+
+@pytest.mark.parametrize(("frame_count", "fps"), [(0, 2.0), (2, 0.0)])
+def test_playback_controller_rejects_non_positive_values(frame_count, fps):
+    viewer = _load_module()
+    with pytest.raises(ValueError, match="positive"):
+        viewer.PlaybackController(
+            frame_count=frame_count,
+            get_frame=lambda: 0,
+            set_frame=lambda _: None,
+            get_fps=lambda: fps,
+        )
+
+
+def test_register_playback_callbacks_connects_play_and_pause():
+    viewer = _load_module()
+
+    class Button:
+        callback = None
+
+        def on_click(self, callback):
+            self.callback = callback
+            return callback
+
+    class Controller:
+        playing = False
+
+        def play(self):
+            self.playing = True
+
+        def pause(self):
+            self.playing = False
+
+    play_button = Button()
+    pause_button = Button()
+    controller = Controller()
+    viewer.register_playback_callbacks(play_button, pause_button, controller)
+
+    play_button.callback(None)
+    assert controller.playing
+    pause_button.callback(None)
+    assert not controller.playing
+
+
 def test_load_run_rejects_mismatched_counts(tmp_path):
     viewer = _load_module()
     np.savetxt(tmp_path / "pred_traj.txt", [[0, 0, 0, 0, 1, 0, 0, 0]])

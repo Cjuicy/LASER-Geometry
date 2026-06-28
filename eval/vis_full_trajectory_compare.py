@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import argparse
 import re
+import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import imageio.v3 as iio
@@ -27,6 +29,70 @@ _COMPARISON_VISIBILITY = {
     "GT vs Geometry": (True, False, True),
     "Baseline vs Geometry": (False, True, True),
 }
+
+
+class PlaybackController:
+    """Advance one shared frame value from a single paused daemon worker."""
+
+    def __init__(
+        self,
+        *,
+        frame_count: int,
+        get_frame: Callable[[], int],
+        set_frame: Callable[[int], None],
+        get_fps: Callable[[], float],
+    ) -> None:
+        if frame_count <= 0:
+            raise ValueError("frame_count must be positive")
+        self._frame_count = frame_count
+        self._get_frame = get_frame
+        self._set_frame = set_frame
+        self._get_fps = get_fps
+        self._validate_fps()
+        self._playing = threading.Event()
+        self._stopped = threading.Event()
+        self._worker = threading.Thread(
+            target=self._run,
+            name="trajectory-playback",
+            daemon=True,
+        )
+        self._worker.start()
+
+    @property
+    def is_playing(self) -> bool:
+        return self._playing.is_set()
+
+    def _validate_fps(self) -> float:
+        fps = float(self._get_fps())
+        if fps <= 0:
+            raise ValueError("playback FPS must be positive")
+        return fps
+
+    def advance_once(self) -> int:
+        next_frame = (int(self._get_frame()) + 1) % self._frame_count
+        self._set_frame(next_frame)
+        return next_frame
+
+    def play(self) -> None:
+        self._playing.set()
+
+    def pause(self) -> None:
+        self._playing.clear()
+
+    def stop(self) -> None:
+        self._stopped.set()
+        self._playing.set()
+        self._worker.join(timeout=1.0)
+        self._playing.clear()
+
+    def _run(self) -> None:
+        while not self._stopped.is_set():
+            if not self._playing.wait(timeout=0.1):
+                continue
+            if self._stopped.wait(1.0 / self._validate_fps()):
+                break
+            if self._playing.is_set():
+                self.advance_once()
 
 
 def numeric_paths(directory: Path | str, pattern: str) -> list[Path]:
@@ -52,6 +118,12 @@ def comparison_visibility(preset: str) -> tuple[bool, bool, bool]:
 def register_comparison_callback(button_group, callback):
     """Register a Viser button-group callback using its click-only API."""
     return button_group.on_click(callback)
+
+
+def register_playback_callbacks(play_button, pause_button, controller) -> None:
+    """Connect playback buttons without adding a second rendering path."""
+    play_button.on_click(lambda _: controller.play())
+    pause_button.on_click(lambda _: controller.pause())
 
 
 def load_tum_poses(path: Path | str) -> np.ndarray:
@@ -531,6 +603,15 @@ def build_viewer(args: argparse.Namespace):
             step=1,
             initial_value=0,
         )
+        playback_fps = server.gui.add_slider(
+            "Playback FPS",
+            min=0.5,
+            max=10.0,
+            step=0.5,
+            initial_value=2.0,
+        )
+        play_button = server.gui.add_button("Play")
+        pause_button = server.gui.add_button("Pause")
         quick_comparison = None
         show_ground_truth = None
         if ground_truth_poses is not None:
@@ -619,6 +700,14 @@ def build_viewer(args: argparse.Namespace):
     @frame_slider.on_update
     def _(_) -> None:
         render_detail(int(frame_slider.value))
+
+    playback = PlaybackController(
+        frame_count=int(baseline["num_frames"]),
+        get_frame=lambda: int(frame_slider.value),
+        set_frame=lambda value: setattr(frame_slider, "value", value),
+        get_fps=lambda: float(playback_fps.value),
+    )
+    register_playback_callbacks(play_button, pause_button, playback)
 
     if quick_comparison is not None:
         def apply_quick_comparison(_) -> None:
