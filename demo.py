@@ -32,6 +32,12 @@ def get_args_parser():
     parser.add_argument('--sample_interval', default=1, type=int, help='sequence sample interval')  # 图像采样间隔
     parser.add_argument('--window_size', default=10, type=int, help='sliding window size')          # 滑窗长度
     parser.add_argument('--overlap', default=5, type=int, help='sliding window overlap size')       # 相邻窗口重叠帧数
+    parser.add_argument(
+        '--top_conf_percentile',
+        default=0.3,
+        type=float,
+        help='fraction of highest-confidence overlap points retained by the shared confidence gate',
+    )
     parser.add_argument('--depth_refine', action='store_true', help='enable depth refine')          # 是否开启 LASER depth segment refinement
 
     # =================================
@@ -97,7 +103,7 @@ def load_model(args):
         overlap=args.overlap,
         cache_root=args.cache_path,
         depth_refine=args.depth_refine,         # ⚠️只有开启depth_refine，make_sp_graph() 才会被调用，进而触发 LASER depth segmentation refinement
-        top_conf_percentile=0.3,
+        top_conf_percentile=args.top_conf_percentile,
 
         # 中文：新增 geometry segmentation 配置。
         # English: New geometry segmentation configuration.

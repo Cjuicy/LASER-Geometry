@@ -17,3 +17,4 @@ def test_demo_exposes_optional_alignment_debug_flags():
     assert "Streaming Pi3 Demo" in result.stdout
     assert "--debug_alignment" in result.stdout
     assert "--debug_alignment_path" in result.stdout
+    assert "--top_conf_percentile" in result.stdout
