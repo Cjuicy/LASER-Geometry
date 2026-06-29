@@ -30,7 +30,8 @@ def refine_segment_scales(
         corr_iou_thresh=0.4,    # 判断 segment 是否对应的 IoU 阈值
         src_conf=None,
         tgt_conf=None,
-        scale_anchor_mode="depth_irls"
+        scale_anchor_mode="depth_irls",
+        trace=None,
 ):
     # 1️⃣ 只取点云最后一维作为 depth。也就是说 refinement 本质上是在 depth map 上估计尺度修正。
     """Estimate a segment-level scale mask from two windows and their graphs."""
@@ -38,6 +39,9 @@ def refine_segment_scales(
     tgt_depth = tgt_pcd[..., -1]
 
     # 2️⃣ 根据前后窗口 overlap 区域的 segment 对应关系，算出当前窗口每一帧，每个像素应该乘的 scale mask
+    align_kwargs = {}
+    if trace is not None:
+        align_kwargs["trace"] = trace
     tgt_scale_mask = align_adjacent_windows_depth_segments(
         src_depth,
         tgt_depth,
@@ -48,6 +52,7 @@ def refine_segment_scales(
         src_conf=src_conf,
         tgt_conf=tgt_conf,
         scale_anchor_mode=scale_anchor_mode,
+        **align_kwargs,
     )
 
     # 3️⃣ 将 [N, H, W] 的 numpy mask 转成 torch tensor，并扩成 [N, H, W, 1]，方便在 streaming_window_engine.py 里直接乘到 local_points 上。
@@ -69,7 +74,8 @@ def align_adjacent_windows_depth_segments(
         corr_iou_thresh=0.4,
         src_conf=None,
         tgt_conf=None,
-        scale_anchor_mode="depth_irls"
+        scale_anchor_mode="depth_irls",
+        trace=None,
 ):
     """
     src_depth: previous window depth map
@@ -99,6 +105,17 @@ def align_adjacent_windows_depth_segments(
             prop_scale = np.dot(np.asarray(parent.cache['scale']), iou_wts / np.sum(iou_wts))
             child.cache['iou'].append(edge_wt)
             child.cache['scale'].append(prop_scale)             # # 然后把传播后的 scale 和当前边的权重 edge_wt 存到 child 节点里。
+            if trace is not None:
+                parent_frame, parent_segment = vertex_locations[id(parent)]
+                child_frame, child_segment = vertex_locations[id(child)]
+                trace.record_propagation(
+                    parent_frame,
+                    parent_segment,
+                    child_frame,
+                    child_segment,
+                    edge_wt,
+                    prop_scale,
+                )
 
     # 2️⃣ 内部函数： 把某个 segment 的 scale cache 转成像素级 mask。（没有可靠对应关系的区域不会被强行改尺度，默认保持原值）
     def _get_scale_mask(mask, cache):
@@ -133,8 +150,17 @@ def align_adjacent_windows_depth_segments(
         src_conf_overlap=src_conf_overlap,
         tgt_conf_overlap=tgt_conf_overlap,
         scale_anchor_mode=scale_anchor_mode,
-        iou_thresh=corr_iou_thresh      # 控制 segment 对应关系的严格程度，IoU不够高的segment 不回被当作可靠对象
+        iou_thresh=corr_iou_thresh,      # 控制 segment 对应关系的严格程度，IoU不够高的segment 不回被当作可靠对象
+        trace=trace,
     )
+    if trace is not None:
+        trace.capture_direct_anchors(tgt_sp_graphs)
+
+    vertex_locations = {
+        id(vertex): (frame_idx, segment_idx)
+        for frame_idx, graph in enumerate(tgt_sp_graphs)
+        for segment_idx, vertex in enumerate(graph)
+    }
     # 6️⃣ 沿当前窗口 graph 传播 scale
     # temporal scale propagation （现在重叠部分找到尺度锚点，再通过 segment graph 把尺度修正扩散到整个窗口）
     for tgt_graph_layer in tgt_sp_graphs:
@@ -149,6 +175,8 @@ def align_adjacent_windows_depth_segments(
             mask_frame += v.data_cache_op(_get_scale_mask)
         mask_seq.append(mask_frame)
     # 8️⃣ 得到 [N, H, W] 的当前窗口尺度修正 mask
+    if trace is not None:
+        trace.capture_segment_states(tgt_sp_graphs)
     return np.stack(mask_seq)
 
 

@@ -4,6 +4,7 @@ import numpy as np
 import torch
 
 from pi3.utils.graph import Vertex
+from inference_engine.alignment_pipeline_trace import ScaleTraceCollector
 from inference_engine.utils import depth as depth_module
 from inference_engine.utils import lsa
 from inference_engine.utils import scale_anchor as scale_anchor_module
@@ -251,3 +252,68 @@ def test_overlap_scale_assignment_can_use_confidence_weighted_anchor_mode():
 
     assert len(tgt_vertex.cache["scale"]) == 1
     assert tgt_vertex.cache["scale"][0] < 3.0
+
+
+def test_scale_trace_distinguishes_anchor_propagated_and_identity():
+    src_labels = np.zeros((1, 2, 2), dtype=np.intp)
+    tgt_labels = np.array(
+        [
+            [[0, 0], [0, 0]],
+            [[0, 0], [0, 0]],
+            [[0, 0], [0, 1]],
+        ],
+        dtype=np.intp,
+    )
+    src_graph = lsa.build_sp_graph_from_labels(src_labels, corr_iou_thresh=0.3)
+    tgt_graph = lsa.build_sp_graph_from_labels(tgt_labels, corr_iou_thresh=0.3)
+    collector = ScaleTraceCollector()
+
+    scale_mask = lsa.align_adjacent_windows_depth_segments(
+        np.full((1, 2, 2), 2.0, dtype=np.float32),
+        np.ones((3, 2, 2), dtype=np.float32),
+        src_graph,
+        tgt_graph,
+        overlap=1,
+        corr_iou_thresh=0.4,
+        trace=collector,
+    )
+
+    states = {(state.frame, state.segment): state for state in collector.segment_states}
+    assert states[(0, 0)].role == "A"
+    assert states[(1, 0)].role == "P"
+    assert states[(2, 1)].role == "I"
+    assert states[(2, 1)].scale == 1.0
+    assert collector.matches
+    assert collector.propagation_edges
+    assert scale_mask.shape == (3, 2, 2)
+
+
+def test_scale_trace_does_not_change_scale_mask():
+    labels = np.array(
+        [
+            [[0, 0], [1, 1]],
+            [[0, 0], [1, 1]],
+        ],
+        dtype=np.intp,
+    )
+    src_depth = np.ones((2, 2, 2), dtype=np.float32)
+    tgt_depth = np.ones((2, 2, 2), dtype=np.float32) * 2.0
+
+    without_trace = lsa.align_adjacent_windows_depth_segments(
+        src_depth,
+        tgt_depth,
+        lsa.build_sp_graph_from_labels(labels),
+        lsa.build_sp_graph_from_labels(labels),
+        overlap=1,
+    )
+    collector = ScaleTraceCollector()
+    with_trace = lsa.align_adjacent_windows_depth_segments(
+        src_depth,
+        tgt_depth,
+        lsa.build_sp_graph_from_labels(labels),
+        lsa.build_sp_graph_from_labels(labels),
+        overlap=1,
+        trace=collector,
+    )
+
+    np.testing.assert_allclose(with_trace, without_trace)

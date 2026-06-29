@@ -237,7 +237,11 @@ def _edge_scale_worker(
         src_vertex,                             # ‼️重要：已经通过 graph 边连接到了若干个 target vertex，每条边表示：这个 source segment 和这个 target segment 在 overlap 区域里有足够 IoU，可以认为是对应关系
         src_conf=None,
         tgt_conf=None,
-        scale_anchor_mode="depth_irls"
+        scale_anchor_mode="depth_irls",
+        trace=None,
+        frame_idx=None,
+        src_segment_idx=None,
+        tgt_vertex_indices=None,
 ):
     src_mask = src_vertex.data
     for tgt_v, tgt_iou in zip(src_vertex.connectivity, src_vertex.edge_weights):
@@ -255,6 +259,14 @@ def _edge_scale_worker(
         # 最后写入 target vertex cache：后面 lsa.py 会从 target graph 的 cache 里读这些 scale，并沿 graph 传播
         tgt_v.cache['iou'].append(tgt_iou)
         tgt_v.cache['scale'].append(tgt2src_s)
+        if trace is not None:
+            trace.record_match(
+                frame=frame_idx,
+                src_segment=src_segment_idx,
+                tgt_segment=tgt_vertex_indices[id(tgt_v)],
+                iou=tgt_iou,
+                scale=tgt2src_s,
+            )
 
 
 # 8️⃣ 整个文件的主入口
@@ -267,7 +279,8 @@ def assign_overlap_window_depth_scale(
         tgt_conf_overlap=None,
         scale_anchor_mode="depth_irls",
         iou_thresh=0.4,
-        n_jobs=1
+        n_jobs=1,
+        trace=None,
 ):
     # 1️⃣ 检查 estimator 模式
     _validate_scale_anchor_mode(scale_anchor_mode)
@@ -277,13 +290,16 @@ def assign_overlap_window_depth_scale(
         connect_bipartite_sp_graphs(src_sp_graph, tgt_sp_graph, iou_thresh=iou_thresh)
 
     # 3️⃣ 逐帧处理 overlap
-    for idx, src_graph in enumerate(src_sp_graphs_overlap):
+    for idx, (src_graph, tgt_graph) in enumerate(
+        zip(src_sp_graphs_overlap, tgt_sp_graphs_overlap)
+    ):
         # 1️⃣ 取当前 overlap 帧的 confidence
         src_conf = None if src_conf_overlap is None else src_conf_overlap[idx]
         tgt_conf = None if tgt_conf_overlap is None else tgt_conf_overlap[idx]
         n_jobs = min(os.cpu_count(), len(src_graph)) if n_jobs is None else n_jobs
         if n_jobs == 1:     # 顺序跑
-            for src_v in src_graph:
+            tgt_vertex_indices = {id(vertex): i for i, vertex in enumerate(tgt_graph)}
+            for src_idx, src_v in enumerate(src_graph):
                 # 2️⃣ 对当前 source graph 里的每个 source segment 估计 scale
                 _edge_scale_worker(
                     src_depth_overlap[idx],
@@ -292,8 +308,13 @@ def assign_overlap_window_depth_scale(
                     src_conf=src_conf,
                     tgt_conf=tgt_conf,
                     scale_anchor_mode=scale_anchor_mode,
+                    trace=trace,
+                    frame_idx=idx,
+                    src_segment_idx=src_idx,
+                    tgt_vertex_indices=tgt_vertex_indices,
                 )
         else:
+            tgt_vertex_indices = {id(vertex): i for i, vertex in enumerate(tgt_graph)}
             with ThreadPoolExecutor(max_workers=n_jobs) as ex:      # 线程池跑
                 promises = [
                     ex.submit(
@@ -304,8 +325,12 @@ def assign_overlap_window_depth_scale(
                         src_conf,
                         tgt_conf,
                         scale_anchor_mode,
+                        trace,
+                        idx,
+                        src_idx,
+                        tgt_vertex_indices,
                     )
-                    for src_v in src_graph
+                    for src_idx, src_v in enumerate(src_graph)
                 ]
                 for promise in as_completed(promises):
                     promise.result()
