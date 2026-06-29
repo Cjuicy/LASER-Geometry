@@ -8,6 +8,7 @@ from inference_engine.alignment_pipeline_trace import ScaleTraceCollector
 from inference_engine.utils import depth as depth_module
 from inference_engine.utils import lsa
 from inference_engine.utils import scale_anchor as scale_anchor_module
+from inference_engine.utils.segmentation_trace import SegmentationStages
 
 
 def test_depth_graph_builder_keeps_original_laser_signature():
@@ -121,6 +122,57 @@ def test_geometry_graph_builder_uses_geometry_segmentation_inputs(monkeypatch):
     np.testing.assert_array_equal(calls["kwargs"]["intrinsic"], intrinsic)
     np.testing.assert_array_equal(calls["labels"], labels)
     assert calls["iou_thresh"] == 0.44
+
+
+def test_depth_graph_builder_collects_initial_and_merged_stages(monkeypatch):
+    initial = np.array([[0, 0], [1, 1]], dtype=np.intp)
+    merged = np.zeros((2, 2), dtype=np.intp)
+    stages = [
+        SegmentationStages(initial, merged, 0.7, np.array([[False, True], [True, True]]))
+    ]
+    monkeypatch.setattr(lsa, "ordered_batch_apply", lambda *args, **kwargs: stages)
+    monkeypatch.setattr(lsa, "match_segmentation_seq", lambda labels, iou_thresh: labels)
+    trace = {}
+
+    graph = lsa.build_depth_sp_graph(
+        np.ones((1, 2, 2), dtype=np.float32),
+        conf_map=np.ones((1, 2, 2), dtype=np.float32),
+        top_conf_percentile=0.7,
+        segmentation_trace=trace,
+    )
+
+    np.testing.assert_array_equal(graph, merged[None])
+    np.testing.assert_array_equal(trace["initial_labels"], initial[None])
+    np.testing.assert_array_equal(trace["merged_labels"], merged[None])
+    np.testing.assert_array_equal(
+        trace["high_confidence_masks"], stages[0].high_confidence_mask[None]
+    )
+    np.testing.assert_allclose(trace["confidence_thresholds"], [0.7])
+
+
+def test_geometry_graph_builder_collects_initial_and_merged_stages(monkeypatch):
+    initial = np.array([[0, 1], [2, 3]], dtype=np.intp)
+    merged = np.array([[0, 0], [1, 1]], dtype=np.intp)
+    stages = [
+        SegmentationStages(initial, merged, 0.6, np.array([[False, True], [True, True]]))
+    ]
+    monkeypatch.setattr(lsa, "ordered_batch_apply", lambda *args, **kwargs: stages)
+    monkeypatch.setattr(lsa, "match_segmentation_seq", lambda labels, iou_thresh: labels)
+    trace = {}
+
+    graph = lsa.build_geometry_sp_graph(
+        np.ones((1, 2, 2), dtype=np.float32),
+        conf_map=np.ones((1, 2, 2), dtype=np.float32),
+        top_conf_percentile=0.6,
+        point_map=np.ones((1, 2, 2, 3), dtype=np.float32),
+        intrinsic=np.eye(3, dtype=np.float32),
+        segmentation_trace=trace,
+    )
+
+    np.testing.assert_array_equal(graph, merged[None])
+    np.testing.assert_array_equal(trace["initial_labels"], initial[None])
+    np.testing.assert_array_equal(trace["merged_labels"], merged[None])
+    np.testing.assert_allclose(trace["confidence_thresholds"], [0.6])
 
 
 def test_refine_segment_scales_is_mode_neutral_name(monkeypatch):

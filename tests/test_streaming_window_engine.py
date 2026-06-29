@@ -1,6 +1,8 @@
 import numpy as np
+import pytest
 import torch
 
+from inference_engine.alignment_pipeline_trace import ScaleTraceCollector, SegmentState
 from inference_engine import streaming_window_engine as swe_module
 from inference_engine.streaming_window_engine import StreamingWindowEngine
 from pi3.utils.graph import Vertex
@@ -165,6 +167,71 @@ def test_streaming_engine_alignment_debug_record_pair_writes_trace(tmp_path):
     assert arrays["tgt_segment_has_scale_frame0"].tolist() == [True]
 
 
+def test_streaming_engine_records_pipeline_window_metadata(tmp_path):
+    engine = StreamingWindowEngine(
+        torch.nn.Identity(),
+        inference_device="cpu",
+        dtype=torch.float32,
+        process_device="cpu",
+        window_size=2,
+        overlap=1,
+        depth_refine=True,
+        cache_root=str(tmp_path / "cache"),
+        benchmark_latency=False,
+        segment_mode="depth",
+        debug_alignment=True,
+        debug_alignment_path=str(tmp_path / "debug"),
+        debug_alignment_scene="scene",
+        debug_sample_interval=10,
+        top_conf_percentile=0.3,
+    )
+    segmentation_trace = {
+        "initial_labels": np.zeros((2, 2, 2), dtype=np.intp),
+        "merged_labels": np.zeros((2, 2, 2), dtype=np.intp),
+        "confidence_thresholds": np.array([0.4, 0.5], dtype=np.float32),
+        "high_confidence_masks": np.ones((2, 2, 2), dtype=bool),
+    }
+    scale_trace = ScaleTraceCollector(
+        segment_states=[
+            SegmentState(0, 0, "I", 1.0),
+            SegmentState(1, 0, "P", 1.1),
+        ]
+    )
+    working_window = {"conf": torch.ones(2, 2, 2)}
+
+    engine._record_alignment_pipeline_window(
+        window_index=1,
+        working_window=working_window,
+        segmentation_trace=segmentation_trace,
+        scale_trace=scale_trace,
+        mutual_conf_mask=torch.ones(1, 2, 2, dtype=torch.bool),
+    )
+
+    pipeline_dir = tmp_path / "debug" / "scene" / "pipeline"
+    with np.load(pipeline_dir / "window_0001.npz", allow_pickle=False) as arrays:
+        assert arrays["global_frame_indices"].tolist() == [1, 2]
+        assert arrays["mutual_confidence_masks"].shape == (1, 2, 2)
+        assert arrays["segment_role"].tolist() == [0, 1]
+    metadata = __import__("json").loads(
+        (pipeline_dir / "meta.json").read_text(encoding="utf-8")
+    )
+    assert metadata["confidence_retained_fraction"] == 0.3
+    assert metadata["confidence_quantile"] == 0.7
+    assert metadata["sample_interval"] == 10
+
+
+def test_streaming_engine_rejects_invalid_confidence_retention(tmp_path):
+    with pytest.raises(ValueError, match="top_conf_percentile"):
+        StreamingWindowEngine(
+            torch.nn.Identity(),
+            inference_device="cpu",
+            dtype=torch.float32,
+            process_device="cpu",
+            cache_root=str(tmp_path),
+            top_conf_percentile=0.0,
+        )
+
+
 def test_registration_worker_uses_geometry_specific_refinement_branch(monkeypatch, tmp_path):
     monkeypatch.setattr(
         swe_module,
@@ -239,3 +306,76 @@ def test_registration_worker_uses_geometry_specific_refinement_branch(monkeypatc
     torch.testing.assert_close(torch.from_numpy(tgt_conf), torch.ones(1, 1, 1))
     second_cache = torch.load(tmp_path / "window_cache_1.pt", map_location="cpu", weights_only=False)
     torch.testing.assert_close(second_cache["local_points"], torch.full((1, 1, 1, 3), 3.0))
+
+
+def test_registration_worker_records_every_debug_pipeline_window(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        swe_module,
+        "estimate_pseudo_depth_and_intrinsics",
+        lambda local_points: (
+            local_points[..., -1],
+            torch.eye(3).repeat(local_points.shape[0], 1, 1),
+        ),
+    )
+    monkeypatch.setattr(
+        swe_module,
+        "unproject_depth_to_local_points",
+        lambda depth, intrinsic: torch.ones(*depth.shape, 3),
+    )
+    monkeypatch.setattr(
+        swe_module,
+        "register_adjacent_windows",
+        lambda *args, **kwargs: (torch.tensor(1.0), torch.eye(3), torch.zeros(3)),
+    )
+    monkeypatch.setattr(
+        swe_module,
+        "apply_sim3_to_pose",
+        lambda camera_poses, *args, **kwargs: camera_poses,
+    )
+
+    engine = StreamingWindowEngine(
+        torch.nn.Identity(),
+        inference_device="cpu",
+        dtype=torch.float32,
+        process_device="cpu",
+        window_size=2,
+        overlap=1,
+        depth_refine=True,
+        cache_root=str(tmp_path / "cache"),
+        benchmark_latency=False,
+        segment_mode="depth",
+        debug_alignment=True,
+        debug_alignment_path=str(tmp_path / "debug"),
+        debug_alignment_scene="scene",
+    )
+    graph_calls = []
+
+    def fake_build(local_points, conf, segmentation_trace=None):
+        assert segmentation_trace is not None
+        segmentation_trace.update(
+            initial_labels=np.zeros((1, 1, 1), dtype=np.intp),
+            merged_labels=np.zeros((1, 1, 1), dtype=np.intp),
+            confidence_thresholds=np.array([0.5], dtype=np.float32),
+            high_confidence_masks=np.ones((1, 1, 1), dtype=bool),
+        )
+        graph_calls.append(segmentation_trace)
+        return [[Vertex(data=np.ones((1, 1), dtype=bool), default_cache={"iou": [], "scale": []})]]
+
+    def fake_refine(*args, trace=None, **kwargs):
+        assert trace is not None
+        trace.segment_states = [SegmentState(0, 0, "A", 1.0)]
+        return torch.ones((1, 1, 1, 1))
+
+    engine._build_depth_segment_graph = fake_build
+    monkeypatch.setattr(swe_module, "refine_segment_scales", fake_refine)
+    engine.temp_cache_dir = tmp_path / "cache"
+    engine.registration_queue.put((_worker_window(), 0.0))
+    engine.registration_queue.put((_worker_window(), 0.0))
+    engine.registration_queue.put(swe_module.STOP_SIGNAL)
+
+    engine._registration_worker()
+
+    pipeline_dir = tmp_path / "debug" / "scene" / "pipeline"
+    assert len(graph_calls) == 2
+    assert (pipeline_dir / "window_0000.npz").is_file()
+    assert (pipeline_dir / "window_0001.npz").is_file()

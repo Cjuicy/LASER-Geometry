@@ -12,13 +12,19 @@ import torch
 import numpy as np
 
 
-from .depth import segment_depth_felzenszwalb_rag
-from .geometry_segmentation import segment_geometry_felzenszwalb_rag
+from .depth import (
+    segment_depth_felzenszwalb_rag,
+    segment_depth_felzenszwalb_rag_stages,
+)
+from .geometry_segmentation import (
+    segment_geometry_felzenszwalb_rag,
+    segment_geometry_felzenszwalb_rag_stages,
+)
 from .scale_anchor import assign_overlap_window_depth_scale
 from .segment_graph import match_segmentation_seq
 
 # batched_image_op_wrapper 用在 depth segmentation 分支里，负责对一个 batch/序列里的多帧逐帧执行图像操作。
-from .batch_threading import batched_image_op_wrapper
+from .batch_threading import batched_image_op_wrapper, ordered_batch_apply
 
 # 1️⃣ 外部调用 segment-level scale refinement 的入口函数
 def refine_segment_scales(
@@ -191,15 +197,36 @@ def build_depth_sp_graph(
     conf_map=None,
     top_conf_percentile=None,
     corr_iou_thresh=0.3,
+    segmentation_trace=None,
 ):
     # 对序列里的每一帧 depth map 调用 segment_depth_felzenszwalb_rag()，生成 depth-based segmentation labels，把 labels 转成 segment graph
-    labels = batched_image_op_wrapper(
-        depth,
-        segment_depth_felzenszwalb_rag,
-        depth_merge_thresh=depth_merge_thresh,
-        conf_map=conf_map,
-        top_conf_percentile=top_conf_percentile,
-    )
+    if segmentation_trace is None:
+        labels = batched_image_op_wrapper(
+            depth,
+            segment_depth_felzenszwalb_rag,
+            depth_merge_thresh=depth_merge_thresh,
+            conf_map=conf_map,
+            top_conf_percentile=top_conf_percentile,
+        )
+    else:
+        stages = ordered_batch_apply(
+            depth,
+            segment_depth_felzenszwalb_rag_stages,
+            depth_merge_thresh=depth_merge_thresh,
+            conf_map=conf_map,
+            top_conf_percentile=top_conf_percentile,
+        )
+        labels = np.stack([stage.merged_labels for stage in stages], axis=0)
+        segmentation_trace.update(
+            initial_labels=np.stack([stage.initial_labels for stage in stages], axis=0),
+            merged_labels=labels,
+            confidence_thresholds=np.asarray(
+                [stage.confidence_threshold for stage in stages], dtype=np.float32
+            ),
+            high_confidence_masks=np.stack(
+                [stage.high_confidence_mask for stage in stages], axis=0
+            ),
+        )
     return build_sp_graph_from_labels(labels, corr_iou_thresh=corr_iou_thresh)
 
 # 🌟6️⃣ 新增 geometry-aware segmentation 分支
@@ -214,17 +241,39 @@ def build_geometry_sp_graph(
     point_map=None,
     intrinsic=None,
     normal_method="cross",
+    segmentation_trace=None,
 ):
-    labels = batched_image_op_wrapper(
-        depth,
-        segment_geometry_felzenszwalb_rag,
-        depth_merge_thresh=depth_merge_thresh,
-        conf_map=conf_map,
-        top_conf_percentile=top_conf_percentile,
-        point_map=point_map,
-        intrinsic=intrinsic,
-        normal_method=normal_method,
-    )
+    op_kwargs = {
+        "depth_merge_thresh": depth_merge_thresh,
+        "conf_map": conf_map,
+        "top_conf_percentile": top_conf_percentile,
+        "point_map": point_map,
+        "intrinsic": intrinsic,
+        "normal_method": normal_method,
+    }
+    if segmentation_trace is None:
+        labels = batched_image_op_wrapper(
+            depth,
+            segment_geometry_felzenszwalb_rag,
+            **op_kwargs,
+        )
+    else:
+        stages = ordered_batch_apply(
+            depth,
+            segment_geometry_felzenszwalb_rag_stages,
+            **op_kwargs,
+        )
+        labels = np.stack([stage.merged_labels for stage in stages], axis=0)
+        segmentation_trace.update(
+            initial_labels=np.stack([stage.initial_labels for stage in stages], axis=0),
+            merged_labels=labels,
+            confidence_thresholds=np.asarray(
+                [stage.confidence_threshold for stage in stages], dtype=np.float32
+            ),
+            high_confidence_masks=np.stack(
+                [stage.high_confidence_mask for stage in stages], axis=0
+            ),
+        )
     return build_sp_graph_from_labels(labels, corr_iou_thresh=corr_iou_thresh)
 
 

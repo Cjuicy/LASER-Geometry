@@ -113,6 +113,7 @@ def load_model(args):
         debug_alignment=args.debug_alignment,
         debug_alignment_path=args.debug_alignment_path,
         debug_alignment_scene=args.scene_name,
+        debug_sample_interval=args.sample_interval,
     )
 # 4️⃣ 实际跑推理主流程
 def run_model(image_names, scene_name, output_path):

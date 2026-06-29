@@ -24,6 +24,16 @@ def _jsonable(value):
     return value
 
 
+def _compact_labels(value):
+    value = _to_numpy(value)
+    if value.size == 0:
+        return value.astype(np.uint16)
+    if np.min(value) < 0:
+        raise ValueError("segmentation labels must be non-negative")
+    dtype = np.uint16 if np.max(value) <= np.iinfo(np.uint16).max else np.uint32
+    return value.astype(dtype, copy=False)
+
+
 class AlignmentDebugRecorder:
     def __init__(self, *, enabled=False, root_dir=None, scene_name=None):
         self.enabled = bool(enabled)
@@ -53,6 +63,32 @@ class AlignmentDebugRecorder:
 
         np_payload = {key: _to_numpy(value) for key, value in payload.items()}
         out_path = self.scene_dir / f"pair_{pair_index:04d}.npz"
+        np.savez_compressed(out_path, **np_payload)
+        return out_path
+
+    def record_pipeline_window(self, *, window_index, payload, metadata=None):
+        if not self.enabled:
+            return None
+        if self.scene_dir is None:
+            raise ValueError("root_dir is required when alignment debug recording is enabled.")
+
+        pipeline_dir = self.scene_dir / "pipeline"
+        pipeline_dir.mkdir(parents=True, exist_ok=True)
+        if metadata:
+            meta_payload = {key: _jsonable(value) for key, value in metadata.items()}
+            (pipeline_dir / "meta.json").write_text(
+                json.dumps(meta_payload, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+
+        np_payload = {}
+        for key, value in payload.items():
+            array = _compact_labels(value) if key in {"initial_labels", "merged_labels"} else _to_numpy(value)
+            if array.dtype.hasobject:
+                raise TypeError(f"pipeline trace array {key!r} must not use object dtype")
+            np_payload[key] = array
+
+        out_path = pipeline_dir / f"window_{window_index:04d}.npz"
         np.savez_compressed(out_path, **np_payload)
         return out_path
 
