@@ -11,6 +11,7 @@ import numpy as np                              # numpy数组计算
 from skimage.segmentation import felzenszwalb   # 初始图像分割算法
 
 from .geometry import build_geometry_info_np    # 构建normal等几何特征
+from .segmentation_trace import SegmentationStages, confidence_selection
 
 
 # 2️⃣ 小辅助函数，用来兼容单帧输入和 batch 输入
@@ -171,7 +172,7 @@ def merge_regions_geometry(
 
 
 # 6️⃣ 本文件的主入口，也就是 lsa.py 里 geometry 分支最终调用的函数。
-def segment_geometry_felzenszwalb_rag(
+def segment_geometry_felzenszwalb_rag_stages(
     depth_map,                      # 当前帧深度图
     conf_map=None,                  # 当前帧置信度图
     intrinsic=None,                 # 相机内参
@@ -224,18 +225,22 @@ def segment_geometry_felzenszwalb_rag(
 
     # 5️⃣ 根据高置信区域计算 depth merge threshold（如果高置信区域存在，就只用高置信区域的 depth range 来计算）
     if conf_map is not None and top_conf_percentile is not None:
-        conf_thresh = np.quantile(conf_map, top_conf_percentile)
-        high_conf_mask = conf_map >= conf_thresh
+        conf_thresh, high_conf_mask = confidence_selection(
+            conf_map,
+            top_conf_percentile,
+        )
         if high_conf_mask.sum() > 0:
             depth_range = np.nanmax(depth_map[high_conf_mask]) - np.nanmin(depth_map[high_conf_mask])
             depth_thresh = depth_merge_thresh * depth_range
         else:
             depth_thresh = None
     else:
+        conf_thresh = float("nan")
+        high_conf_mask = np.ones(depth_map.shape, dtype=bool)
         depth_thresh = None
 
     # 6️⃣ 几何规则二次合并
-    return merge_regions_geometry(
+    merged_labels = merge_regions_geometry(
         labels,
         depth_map,
         geometry_info,
@@ -243,3 +248,39 @@ def segment_geometry_felzenszwalb_rag(
         depth_thresh=depth_thresh,
         normal_thresh_deg=normal_thresh_deg,
     )
+    return SegmentationStages(
+        initial_labels=np.asarray(labels, dtype=np.intp),
+        merged_labels=np.asarray(merged_labels, dtype=np.intp),
+        confidence_threshold=conf_thresh,
+        high_confidence_mask=high_conf_mask,
+    )
+
+
+def segment_geometry_felzenszwalb_rag(
+    depth_map,
+    conf_map=None,
+    intrinsic=None,
+    point_map=None,
+    top_conf_percentile=None,
+    depth_merge_thresh=0.1,
+    normal_thresh_deg=20.0,
+    seg_scale=200,
+    seg_sigma=1.0,
+    seg_min_size=300,
+    normal_method="cross",
+    batch_idx=None,
+):
+    return segment_geometry_felzenszwalb_rag_stages(
+        depth_map,
+        conf_map=conf_map,
+        intrinsic=intrinsic,
+        point_map=point_map,
+        top_conf_percentile=top_conf_percentile,
+        depth_merge_thresh=depth_merge_thresh,
+        normal_thresh_deg=normal_thresh_deg,
+        seg_scale=seg_scale,
+        seg_sigma=seg_sigma,
+        seg_min_size=seg_min_size,
+        normal_method=normal_method,
+        batch_idx=batch_idx,
+    ).merged_labels

@@ -12,7 +12,7 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-def batched_image_op_wrapper(
+def ordered_batch_apply(
         images,
         op_func=None,
         n_jobs=None,
@@ -33,10 +33,7 @@ def batched_image_op_wrapper(
         Function that process a single image:
         `op_func(image, *args, **kwargs) -> (M, N)`.
 
-    Returns
-    -------
-    labels : ndarray, shape (B, M, N)
-        Segmentation masks for each image.
+    Returns an ordered list so callers may collect arrays or richer results.
     """
     images = np.asarray(images)
     if op_func is None:
@@ -44,17 +41,17 @@ def batched_image_op_wrapper(
 
     B, H, W = images.shape[:3]
     if B == 0:
-        return np.empty((0, H, W), dtype=np.intp)
+        return []
 
     if n_jobs is None:
         n_jobs = min(os.cpu_count(), B)
 
     # sequential path
     if n_jobs == 1:
-        return np.stack([
+        return [
             op_func(images[i], *args, **kwargs, batch_idx=i)
             for i in range(B)
-        ], axis=0).astype(np.intp, copy=False)
+        ]
 
     # parallel path
     results = [None] * B
@@ -67,4 +64,27 @@ def batched_image_op_wrapper(
             idx = promises[promise]
             results[idx] = promise.result()
 
+    return results
+
+
+def batched_image_op_wrapper(
+        images,
+        op_func=None,
+        n_jobs=None,
+        *args,
+        **kwargs
+):
+    """Run a single-frame image operation and stack ordered label arrays."""
+    images = np.asarray(images)
+    B, H, W = images.shape[:3]
+    if B == 0:
+        return np.empty((0, H, W), dtype=np.intp)
+
+    results = ordered_batch_apply(
+        images,
+        op_func=op_func,
+        n_jobs=n_jobs,
+        *args,
+        **kwargs,
+    )
     return np.stack(results, axis=0).astype(np.intp, copy=False)

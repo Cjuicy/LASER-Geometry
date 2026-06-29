@@ -11,10 +11,11 @@ from skimage.segmentation import felzenszwalb
 
 from ._segmentation_cy import merge_regions
 from .fast_seg import fast_graph_segmentation
+from .segmentation_trace import SegmentationStages, confidence_selection
 
 
 # 1️⃣ 原始 LASER 的 depth segmentation 分支之一：深度分割
-def segment_depth_felzenszwalb_rag(
+def segment_depth_felzenszwalb_rag_stages(
         depth_map,
         depth_merge_thresh,
         conf_map=None,
@@ -28,16 +29,50 @@ def segment_depth_felzenszwalb_rag(
     seg_mask = felzenszwalb(depth_map, scale=seg_scale, sigma=seg_sigma, min_size=seg_min_size)
     # 2️⃣ 如果有 confidence map，就只用高置信区域的 depth range 来决定 merge threshold
     if conf_map is not None and top_conf_percentile is not None:
-        conf_map = conf_map[batch_idx]
-        conf_thresh = np.quantile(conf_map.reshape(-1), top_conf_percentile, method='nearest')
-        conf_depth = depth_map[conf_map >= conf_thresh]
+        conf_map = conf_map[batch_idx] if batch_idx is not None else np.asarray(conf_map)
+        conf_thresh, high_conf_mask = confidence_selection(
+            conf_map,
+            top_conf_percentile,
+            method="nearest",
+        )
+        conf_depth = depth_map[high_conf_mask]
     else:
+        conf_thresh = float("nan")
+        high_conf_mask = np.ones(depth_map.shape, dtype=bool)
         conf_depth = depth_map
     # 3️⃣ 根据深度范围计算合并阈值
     merge_thresh = depth_merge_thresh * (np.max(conf_depth) - np.min(conf_depth))
 
     # 4️⃣ 调用 Cython 实现的 merge_regions()，就是把 Felzenszwalb 初始分割中深度相近的区域继续合并
-    return merge_regions(seg_mask, depth_map, merge_thresh)
+    merged_labels = merge_regions(seg_mask, depth_map, merge_thresh)
+    return SegmentationStages(
+        initial_labels=np.asarray(seg_mask, dtype=np.intp),
+        merged_labels=np.asarray(merged_labels, dtype=np.intp),
+        confidence_threshold=conf_thresh,
+        high_confidence_mask=high_conf_mask,
+    )
+
+
+def segment_depth_felzenszwalb_rag(
+        depth_map,
+        depth_merge_thresh,
+        conf_map=None,
+        top_conf_percentile=None,
+        seg_scale=300,
+        seg_sigma=1.1,
+        seg_min_size=500,
+        batch_idx=None
+):
+    return segment_depth_felzenszwalb_rag_stages(
+        depth_map,
+        depth_merge_thresh,
+        conf_map=conf_map,
+        top_conf_percentile=top_conf_percentile,
+        seg_scale=seg_scale,
+        seg_sigma=seg_sigma,
+        seg_min_size=seg_min_size,
+        batch_idx=batch_idx,
+    ).merged_labels
 
 
 # 2️⃣ depth-based segmentation 的快速实现：跳过 felzenszwalb + merge_regions，直接使用 graph segmentation。
