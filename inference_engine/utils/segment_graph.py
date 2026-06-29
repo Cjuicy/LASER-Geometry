@@ -86,7 +86,14 @@ def match_segmentation_seq(labels, iou_thresh=0.4):
         # 每个 segment id 变成一个bool mask
         masks = seg[None, :, :] == seg_ids[:, None, None]
         # 每个mask 包装成Vertex，每个Vertex自带cache
-        return [Vertex(data=m, default_cache={'iou': [], 'scale': []}) for m in masks]
+        return [
+            Vertex(
+                data=mask,
+                vid=int(seg_id),
+                default_cache={'iou': [], 'scale': []},
+            )
+            for seg_id, mask in zip(seg_ids, masks)
+        ]
 
     # 2️⃣ 先处理第一帧
     sp_graph = [get_seg_vertices(labels[0])]

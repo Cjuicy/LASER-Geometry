@@ -38,6 +38,10 @@ def _mean_cached_scale(cache):
     return float(np.dot(scales, weights / weights.sum()))
 
 
+def _vertex_segment_id(vertex, fallback):
+    return int(vertex.vid) if vertex.vid is not None else int(fallback)
+
+
 @dataclass
 class ScaleTraceCollector:
     matches: list[MatchRecord] = field(default_factory=list)
@@ -60,7 +64,8 @@ class ScaleTraceCollector:
         self.direct_anchor_keys = {
             (frame_idx, segment_idx)
             for frame_idx, graph in enumerate(graphs)
-            for segment_idx, vertex in enumerate(graph)
+            for fallback, vertex in enumerate(graph)
+            for segment_idx in [_vertex_segment_id(vertex, fallback)]
             if vertex.cache.get("scale")
         }
 
@@ -87,7 +92,8 @@ class ScaleTraceCollector:
     def capture_segment_states(self, graphs):
         states = []
         for frame_idx, graph in enumerate(graphs):
-            for segment_idx, vertex in enumerate(graph):
+            for fallback, vertex in enumerate(graph):
+                segment_idx = _vertex_segment_id(vertex, fallback)
                 key = (frame_idx, segment_idx)
                 if key in self.direct_anchor_keys:
                     role = "A"

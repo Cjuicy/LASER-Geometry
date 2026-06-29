@@ -163,7 +163,10 @@ def align_adjacent_windows_depth_segments(
         trace.capture_direct_anchors(tgt_sp_graphs)
 
     vertex_locations = {
-        id(vertex): (frame_idx, segment_idx)
+        id(vertex): (
+            frame_idx,
+            int(vertex.vid) if vertex.vid is not None else segment_idx,
+        )
         for frame_idx, graph in enumerate(tgt_sp_graphs)
         for segment_idx, vertex in enumerate(graph)
     }

@@ -369,3 +369,22 @@ def test_scale_trace_does_not_change_scale_mask():
     )
 
     np.testing.assert_allclose(with_trace, without_trace)
+
+
+def test_scale_trace_preserves_non_contiguous_segmentation_label_ids():
+    src_labels = np.full((1, 2, 2), 5, dtype=np.intp)
+    tgt_labels = np.full((1, 2, 2), 9, dtype=np.intp)
+    collector = ScaleTraceCollector()
+
+    lsa.align_adjacent_windows_depth_segments(
+        np.ones((1, 2, 2), dtype=np.float32),
+        np.ones((1, 2, 2), dtype=np.float32),
+        lsa.build_sp_graph_from_labels(src_labels),
+        lsa.build_sp_graph_from_labels(tgt_labels),
+        overlap=1,
+        trace=collector,
+    )
+
+    assert collector.matches[0].src_segment == 5
+    assert collector.matches[0].tgt_segment == 9
+    assert collector.segment_states[0].segment == 9
