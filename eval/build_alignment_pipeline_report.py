@@ -604,6 +604,20 @@ def _render_method_stages(
     return stages
 
 
+def select_playback_row_indices(rows):
+    selected = {}
+    for row_index, row in enumerate(rows):
+        global_frame = int(row["global_frame"])
+        current_index = selected.get(global_frame)
+        if current_index is None:
+            selected[global_frame] = row_index
+            continue
+        current = rows[current_index]
+        if current["is_overlap"] and not row["is_overlap"]:
+            selected[global_frame] = row_index
+    return [selected[global_frame] for global_frame in sorted(selected)]
+
+
 def _build_html(manifest):
     row_html = []
     for row_index, row in enumerate(manifest["rows"]):

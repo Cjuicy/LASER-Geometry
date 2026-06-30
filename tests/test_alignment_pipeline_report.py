@@ -14,6 +14,7 @@ from eval.build_alignment_pipeline_report import (
     render_overlap_stage,
     render_propagation_stage,
     render_segmentation_stage,
+    select_playback_row_indices,
 )
 
 
@@ -121,6 +122,27 @@ def test_shared_depth_range_ignores_non_finite_values():
     assert np.isfinite(lo)
     assert np.isfinite(hi)
     assert 1.0 <= lo < hi <= 3.0
+
+
+def test_playback_sequence_is_unique_monotonic_and_prefers_non_overlap():
+    rows = [
+        {"global_frame": 2, "is_overlap": True},
+        {"global_frame": 0, "is_overlap": False},
+        {"global_frame": 1, "is_overlap": True},
+        {"global_frame": 1, "is_overlap": False},
+        {"global_frame": 2, "is_overlap": False},
+    ]
+
+    assert select_playback_row_indices(rows) == [1, 3, 4]
+
+
+def test_playback_sequence_keeps_earliest_equal_preference():
+    rows = [
+        {"global_frame": 5, "is_overlap": False},
+        {"global_frame": 5, "is_overlap": False},
+    ]
+
+    assert select_playback_row_indices(rows) == [0]
 
 
 def _metadata(segment_mode):
