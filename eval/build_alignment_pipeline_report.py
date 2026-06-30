@@ -967,6 +967,7 @@ def _build_player_html(playback_manifest):
         }}
         frameIndex += 1;
         renderPlayback();
+        if (frameIndex === frames.length - 1) stopPlayback();
       }}, 1000 / fps);
       renderPlayback();
     }}

@@ -374,6 +374,7 @@ def test_report_writes_ten_assets_per_row_and_single_entry_html(tmp_path):
     assert "event.code === 'Space'" in player_html
     assert "frames.length - 1" in player_html
     assert "image.onerror" in player_html
+    assert "if (frameIndex === frames.length - 1) stopPlayback();" in player_html
     assert 'data-stage-name=' in html
     assert 'id="modal-depth-image"' in html
     assert 'id="modal-geometry-image"' in html
