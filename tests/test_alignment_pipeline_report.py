@@ -364,6 +364,16 @@ def test_report_writes_ten_assets_per_row_and_single_entry_html(tmp_path):
     assert 'id="previous-geometry-image"' in player_html
     assert 'id="current-depth-image"' in player_html
     assert 'id="current-geometry-image"' in player_html
+    assert "function renderPlayback()" in player_html
+    assert "function togglePlayback()" in player_html
+    assert "function preloadNextFrame()" in player_html
+    assert "setInterval" in player_html
+    assert "clearInterval" in player_html
+    assert "event.key === 'ArrowLeft'" in player_html
+    assert "event.key === 'ArrowRight'" in player_html
+    assert "event.code === 'Space'" in player_html
+    assert "frames.length - 1" in player_html
+    assert "image.onerror" in player_html
     assert 'data-stage-name=' in html
     assert 'id="modal-depth-image"' in html
     assert 'id="modal-geometry-image"' in html

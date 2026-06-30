@@ -849,6 +849,165 @@ def _build_player_html(playback_manifest):
     </div>
   </main>
   <script id="playback-data" type="application/json">{playback_json}</script>
+  <script>
+    const playback = JSON.parse(document.getElementById('playback-data').textContent);
+    const frames = playback.frames;
+    let frameIndex = 0;
+    let stageName = 'merged';
+    let fps = 2;
+    let timer = null;
+
+    function stopPlayback() {{
+      if (timer !== null) clearInterval(timer);
+      timer = null;
+      const playButton = document.getElementById('play-button');
+      playButton.textContent = 'Play';
+      playButton.title = '播放';
+      playButton.setAttribute('aria-label', '播放');
+    }}
+
+    function resolveStage(frame, method) {{
+      return frame?.stages?.[stageName]?.[method] || null;
+    }}
+
+    function renderPanel(prefix, frame, method, label, comparisonFrame = null) {{
+      const image = document.getElementById(`${{prefix}}-${{method}}-image`);
+      const title = document.getElementById(`${{prefix}}-${{method}}-title`);
+      const meta = document.getElementById(`${{prefix}}-${{method}}-meta`);
+      const methodLabel = method === 'depth' ? 'BASELINE / DEPTH' : 'GEOMETRY';
+      if (!frame) {{
+        image.removeAttribute('src');
+        image.hidden = true;
+        title.textContent = `${{methodLabel}} · ${{label}} · 无`;
+        meta.textContent = '这是序列第一帧';
+        return;
+      }}
+      const stage = resolveStage(frame, method);
+      if (!stage) {{
+        throw new Error(`缺少 ${{method}} ${{stageName}}，G${{frame.global_frame}}`);
+      }}
+      image.hidden = false;
+      image.onerror = () => {{
+        if (image.getAttribute('src') !== stage.asset) return;
+        image.hidden = true;
+        meta.textContent = `图片加载失败：${{stage.asset}}`;
+      }};
+      image.src = stage.asset;
+      title.textContent = `${{methodLabel}} · ${{label}} · G${{String(frame.global_frame).padStart(5, '0')}}`;
+      const comparisonStage = resolveStage(comparisonFrame, method);
+      const delta = comparisonStage
+        ? stage.segment_count - comparisonStage.segment_count
+        : null;
+      const deltaText = delta === null
+        ? ''
+        : ` · Δ vs 前一帧: ${{delta >= 0 ? '+' : ''}}${{delta}}`;
+      meta.textContent = `segments: ${{stage.segment_count}}${{deltaText}}`;
+    }}
+
+    function preloadNextFrame() {{
+      const frame = frames[frameIndex + 1];
+      if (!frame) return;
+      for (const method of ['depth', 'geometry']) {{
+        const stage = resolveStage(frame, method);
+        if (stage) new Image().src = stage.asset;
+      }}
+    }}
+
+    function renderPlayback() {{
+      const error = document.getElementById('playback-error');
+      error.style.display = 'none';
+      if (!frames.length) {{
+        stopPlayback();
+        error.textContent = '没有可播放的帧';
+        error.style.display = 'block';
+        return;
+      }}
+      frameIndex = Math.max(0, Math.min(frameIndex, frames.length - 1));
+      const current = frames[frameIndex];
+      const previous = frameIndex > 0 ? frames[frameIndex - 1] : null;
+      try {{
+        renderPanel('previous', previous, 'depth', '前一帧');
+        renderPanel('previous', previous, 'geometry', '前一帧');
+        renderPanel('current', current, 'depth', '当前帧', previous);
+        renderPanel('current', current, 'geometry', '当前帧', previous);
+      }} catch (renderError) {{
+        stopPlayback();
+        error.textContent = renderError.message;
+        error.style.display = 'block';
+      }}
+      const timeline = document.getElementById('timeline');
+      timeline.max = String(frames.length - 1);
+      timeline.value = String(frameIndex);
+      document.getElementById('playback-status').textContent =
+        `G${{String(current.global_frame).padStart(5, '0')}} · ${{frameIndex + 1}}/${{frames.length}}`;
+      preloadNextFrame();
+    }}
+
+    function stepFrame(delta) {{
+      stopPlayback();
+      frameIndex = Math.max(0, Math.min(frameIndex + delta, frames.length - 1));
+      renderPlayback();
+    }}
+
+    function togglePlayback() {{
+      if (timer !== null) {{
+        stopPlayback();
+        return;
+      }}
+      if (!frames.length) return;
+      if (frameIndex === frames.length - 1) frameIndex = 0;
+      const playButton = document.getElementById('play-button');
+      playButton.textContent = 'Pause';
+      playButton.title = '暂停';
+      playButton.setAttribute('aria-label', '暂停');
+      timer = setInterval(() => {{
+        if (frameIndex >= frames.length - 1) {{
+          stopPlayback();
+          return;
+        }}
+        frameIndex += 1;
+        renderPlayback();
+      }}, 1000 / fps);
+      renderPlayback();
+    }}
+
+    document.getElementById('previous-button').addEventListener('click', () => stepFrame(-1));
+    document.getElementById('play-button').addEventListener('click', togglePlayback);
+    document.getElementById('next-button').addEventListener('click', () => stepFrame(1));
+    document.getElementById('timeline').addEventListener('input', (event) => {{
+      stopPlayback();
+      frameIndex = Number(event.target.value);
+      renderPlayback();
+    }});
+    document.getElementById('playback-speed').addEventListener('change', (event) => {{
+      const wasPlaying = timer !== null;
+      stopPlayback();
+      fps = Number(event.target.value);
+      if (wasPlaying) togglePlayback();
+    }});
+    document.querySelectorAll('[data-stage]').forEach((button) => {{
+      button.addEventListener('click', () => {{
+        stageName = button.dataset.stage;
+        document.querySelectorAll('[data-stage]').forEach((candidate) => {{
+          candidate.setAttribute('aria-pressed', String(candidate === button));
+        }});
+        renderPlayback();
+      }});
+    }});
+    document.addEventListener('keydown', (event) => {{
+      if (event.target instanceof Element && event.target.matches('input, select, button, a')) return;
+      if (event.key === 'ArrowLeft') stepFrame(-1);
+      if (event.key === 'ArrowRight') stepFrame(1);
+      if (event.code === 'Space') {{
+        event.preventDefault();
+        togglePlayback();
+      }}
+    }});
+    document.addEventListener('visibilitychange', () => {{
+      if (document.hidden) stopPlayback();
+    }});
+    renderPlayback();
+  </script>
 </body>
 </html>
 """
