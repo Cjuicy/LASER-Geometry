@@ -347,8 +347,23 @@ def test_report_writes_ten_assets_per_row_and_single_entry_html(tmp_path):
     assert len(manifest["rows"]) == 4
     assert all(len(row["stages"]) == 10 for row in manifest["rows"])
     html = (out_dir / "index.html").read_text(encoding="utf-8")
+    player_html = (out_dir / "player.html").read_text(encoding="utf-8")
     assert 'loading="lazy"' in html
     assert 'class="pipeline-row"' in html
+    assert 'href="player.html"' in html
+    assert 'href="index.html"' in player_html
+    assert 'id="playback-grid"' in player_html
+    assert 'id="previous-button"' in player_html
+    assert 'id="play-button"' in player_html
+    assert 'id="next-button"' in player_html
+    assert 'id="timeline"' in player_html
+    assert 'id="playback-speed"' in player_html
+    assert 'data-stage="initial"' in player_html
+    assert 'data-stage="merged"' in player_html
+    assert 'id="previous-depth-image"' in player_html
+    assert 'id="previous-geometry-image"' in player_html
+    assert 'id="current-depth-image"' in player_html
+    assert 'id="current-geometry-image"' in player_html
     assert 'data-stage-name=' in html
     assert 'id="modal-depth-image"' in html
     assert 'id="modal-geometry-image"' in html
@@ -358,6 +373,7 @@ def test_report_writes_ten_assets_per_row_and_single_entry_html(tmp_path):
     assert "candidate.method === 'geometry'" in html
     assert "candidate.stage === stageName" in html
     assert "@media (max-width: 760px)" in html
+    assert "@media (max-width: 760px)" in player_html
     for row in manifest["rows"]:
         for stage in row["stages"]:
             assert (out_dir / stage["asset"]).is_file()

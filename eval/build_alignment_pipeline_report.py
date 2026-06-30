@@ -692,6 +692,8 @@ def _build_html(manifest):
     header {{ padding: 14px 18px; background: #fff; border-bottom: 1px solid #ccd3da; }}
     h1 {{ margin: 0 0 7px; font-size: 22px; letter-spacing: 0; }}
     .summary {{ margin: 0; color: #4d5a66; font-size: 13px; }}
+    .report-nav {{ margin: 8px 0 0; }}
+    .report-nav a {{ color: #245a8d; font-weight: 700; }}
     .sticky {{ position: sticky; top: 0; z-index: 5; background: #fff; border-bottom: 1px solid #aeb8c1; overflow-x: auto; }}
     .method-grid, .stage-header, .stage-grid {{ display: grid; grid-template-columns: repeat(10, minmax(170px, 1fr)); gap: 6px; min-width: 1760px; }}
     .method-grid {{ padding: 8px 12px 3px; }}
@@ -727,6 +729,7 @@ def _build_html(manifest):
   <header>
     <h1>LASER Depth vs Geometry 对齐流水线</h1>
     <p class="summary">window={manifest['metadata']['window_size']} · overlap={manifest['metadata']['overlap']} · sample={manifest['metadata']['sample_interval']} · retained={manifest['metadata']['confidence_retained_fraction']:.3g} · quantile={manifest['metadata']['confidence_quantile']:.3g} · anchor=depth_irls</p>
+    <p class="report-nav"><a href="player.html">播放分割序列</a></p>
   </header>
   <div class="sticky">
     <div class="method-grid"><div class="method-depth">BASELINE / DEPTH</div><div class="method-geometry">GEOMETRY</div></div>
@@ -771,6 +774,81 @@ def _build_html(manifest):
     }});
     document.querySelector('button.close').addEventListener('click', () => modal.close());
   </script>
+</body>
+</html>
+"""
+
+
+def _build_player_html(playback_manifest):
+    playback_json = json.dumps(playback_manifest, ensure_ascii=False).replace(
+        "</", "<\\/"
+    )
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>LASER Segmentation Playback</title>
+  <style>
+    :root {{ color-scheme: light; font-family: Arial, sans-serif; color: #17212b; background: #eef1f4; }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; }}
+    .toolbar {{ position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; background: #fff; border-bottom: 1px solid #b9c2ca; }}
+    .toolbar a {{ color: #245a8d; font-weight: 700; }}
+    .controls {{ display: flex; align-items: center; gap: 6px; }}
+    button, select, input {{ font: inherit; }}
+    button {{ min-height: 34px; padding: 5px 10px; border: 1px solid #aeb8c1; border-radius: 4px; background: #fff; cursor: pointer; }}
+    button[aria-pressed="true"] {{ color: #fff; background: #245a8d; border-color: #245a8d; }}
+    #timeline {{ flex: 1 1 260px; min-width: 160px; }}
+    .status {{ min-width: 190px; font-variant-numeric: tabular-nums; }}
+    main {{ padding: 12px; }}
+    .playback-grid {{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }}
+    .panel {{ min-width: 0; padding: 8px; background: #fff; border: 1px solid #d5dbe0; border-radius: 6px; }}
+    .panel.depth {{ border-top: 4px solid #245a8d; }}
+    .panel.geometry {{ border-top: 4px solid #28734c; }}
+    .panel h2 {{ margin: 0 0 7px; font-size: 14px; }}
+    .panel img {{ display: block; width: 100%; min-height: 160px; object-fit: contain; background: #18212a; }}
+    .panel-meta {{ margin-top: 6px; color: #4d5a66; font-size: 12px; }}
+    .panel-error {{ display: none; margin-bottom: 10px; padding: 12px; color: #8b1e1e; background: #fff0f0; border: 1px solid #e0aaaa; }}
+    @media (max-width: 760px) {{
+      .playback-grid {{ grid-template-columns: 1fr; }}
+      .panel img {{ min-height: 120px; }}
+    }}
+  </style>
+</head>
+<body>
+  <header class="toolbar">
+    <a href="index.html">返回完整报告</a>
+    <div class="controls" aria-label="帧控制">
+      <button id="previous-button" type="button" title="上一帧" aria-label="上一帧">|&lt;</button>
+      <button id="play-button" type="button" title="播放" aria-label="播放">Play</button>
+      <button id="next-button" type="button" title="下一帧" aria-label="下一帧">&gt;|</button>
+    </div>
+    <div class="controls" aria-label="分割阶段">
+      <button type="button" data-stage="initial" aria-pressed="false">初始分割</button>
+      <button type="button" data-stage="merged" aria-pressed="true">融合后分割</button>
+    </div>
+    <label>速度
+      <select id="playback-speed">
+        <option value="0.5">0.5 FPS</option>
+        <option value="1">1 FPS</option>
+        <option value="2" selected>2 FPS</option>
+        <option value="4">4 FPS</option>
+      </select>
+    </label>
+    <input id="timeline" type="range" min="0" value="0" step="1" aria-label="时间轴">
+    <span id="playback-status" class="status"></span>
+  </header>
+  <main>
+    <div id="playback-error" class="panel-error" role="alert"></div>
+    <div id="playback-grid" class="playback-grid">
+      <section class="panel depth"><h2 id="previous-depth-title">BASELINE / DEPTH · 前一帧</h2><img id="previous-depth-image" alt="Baseline previous frame"><div id="previous-depth-meta" class="panel-meta"></div></section>
+      <section class="panel geometry"><h2 id="previous-geometry-title">GEOMETRY · 前一帧</h2><img id="previous-geometry-image" alt="Geometry previous frame"><div id="previous-geometry-meta" class="panel-meta"></div></section>
+      <section class="panel depth"><h2 id="current-depth-title">BASELINE / DEPTH · 当前帧</h2><img id="current-depth-image" alt="Baseline current frame"><div id="current-depth-meta" class="panel-meta"></div></section>
+      <section class="panel geometry"><h2 id="current-geometry-title">GEOMETRY · 当前帧</h2><img id="current-geometry-image" alt="Geometry current frame"><div id="current-geometry-meta" class="panel-meta"></div></section>
+    </div>
+  </main>
+  <script id="playback-data" type="application/json">{playback_json}</script>
 </body>
 </html>
 """
@@ -908,11 +986,18 @@ def build_report(
             )
 
     manifest = {"metadata": metadata, "rows": rows}
+    jsonable_manifest = _jsonable(manifest)
     (out_dir / "data.json").write_text(
-        json.dumps(_jsonable(manifest), ensure_ascii=False, indent=2),
+        json.dumps(jsonable_manifest, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    (out_dir / "index.html").write_text(_build_html(_jsonable(manifest)), encoding="utf-8")
+    (out_dir / "index.html").write_text(
+        _build_html(jsonable_manifest), encoding="utf-8"
+    )
+    playback_manifest = build_playback_manifest(jsonable_manifest)
+    (out_dir / "player.html").write_text(
+        _build_player_html(playback_manifest), encoding="utf-8"
+    )
     return {"out_dir": out_dir, "row_count": len(rows)}
 
 
