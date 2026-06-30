@@ -192,6 +192,15 @@ depth heatmap beside the segmentation result. Both methods use the same p02-p98
 depth color range for that frame. Clicking any card opens the matching Depth
 and Geometry stage together for direct comparison.
 
+The builder also writes `player.html`. It compares the previous and current
+canonical global frames for Baseline/Depth and Geometry, with Initial/Merged
+stage selection, playback speed, seeking, and frame controls. Open
+`/player.html` from the same server.
+
+If schema-v2 traces already exist, code updates to the report or player only
+require rerunning `eval/build_alignment_pipeline_report.py`; model inference
+does not need to run again.
+
 `--sample_interval` on the report command is only a consistency check; the
 recorded runtime metadata remains authoritative. The default report contains
 all recorded windows and frames. For a quick preview, add for example
