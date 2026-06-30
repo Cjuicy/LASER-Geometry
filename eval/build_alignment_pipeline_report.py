@@ -133,6 +133,60 @@ def _scale_color(scale):
     return tuple(int(x) for x in color)
 
 
+def compute_shared_depth_range(*depth_maps):
+    valid_chunks = []
+    for depth in depth_maps:
+        depth = np.asarray(depth, dtype=np.float32)
+        valid = depth[np.isfinite(depth)]
+        if valid.size:
+            valid_chunks.append(valid)
+    if not valid_chunks:
+        return 0.0, 1.0
+
+    values = np.concatenate(valid_chunks)
+    lo, hi = np.percentile(values, (2.0, 98.0))
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        lo = float(np.min(values))
+        hi = float(np.max(values))
+    if hi <= lo:
+        hi = lo + 1.0
+    return float(lo), float(hi)
+
+
+def colorize_depth(depth, display_range):
+    depth = np.asarray(depth, dtype=np.float32)
+    lo, hi = display_range
+    finite = np.isfinite(depth)
+    normalized = np.zeros(depth.shape, dtype=np.float32)
+    normalized[finite] = np.clip((depth[finite] - lo) / (hi - lo), 0.0, 1.0)
+    image = cv2.applyColorMap(
+        (normalized * 255).astype(np.uint8),
+        cv2.COLORMAP_TURBO,
+    )
+    image[~finite] = 0
+
+    valid = depth[finite]
+    details = {
+        "valid_pixels": int(valid.size),
+        "depth_min": float(np.min(valid)) if valid.size else None,
+        "depth_p02": float(np.percentile(valid, 2)) if valid.size else None,
+        "depth_p50": float(np.percentile(valid, 50)) if valid.size else None,
+        "depth_p98": float(np.percentile(valid, 98)) if valid.size else None,
+        "depth_max": float(np.max(valid)) if valid.size else None,
+        "shared_color_min": float(lo),
+        "shared_color_max": float(hi),
+    }
+    return image, details
+
+
+def compose_depth_segmentation(depth_color, segmentation):
+    depth_color = np.asarray(depth_color, dtype=np.uint8)
+    segmentation = np.asarray(segmentation, dtype=np.uint8)
+    if depth_color.shape != segmentation.shape:
+        raise ValueError("depth and segmentation images must have the same shape")
+    return np.concatenate([depth_color, segmentation], axis=1)
+
+
 def render_confidence_stage(rgb_bgr, high_mask, mutual_mask=None):
     result = _dim_confidence(rgb_bgr, high_mask)
     result[_mask_boundaries(high_mask)] = (255, 255, 255)
@@ -432,6 +486,7 @@ def _render_method_stages(
     previous_window_arrays,
     overlap,
     assets_dir,
+    shared_depth_range,
 ):
     high_mask = arrays["high_confidence_masks"][local_frame]
     mutual_mask = None
@@ -444,6 +499,11 @@ def _render_method_stages(
         [match["tgt_segment"] for match in matches],
         dtype=np.int32,
     )
+    depth_color, depth_details = colorize_depth(
+        arrays["segmentation_depths"][local_frame],
+        shared_depth_range,
+    )
+    depth_color = _draw_badge(depth_color, "Segmentation depth")
 
     prefix = Path("assets") / f"window_{window_index:04d}"
     stages = []
@@ -473,6 +533,11 @@ def _render_method_stages(
         merged_labels=arrays["merged_labels"][local_frame],
         anchor_ids=anchor_ids,
     )
+    initial_image = compose_depth_segmentation(
+        depth_color,
+        _draw_badge(initial_image, "Initial segments"),
+    )
+    initial_details["depth"] = depth_details
     initial_path = prefix / f"frame_{local_frame:04d}_{method}_initial.webp"
     _write_webp(assets_dir.parent / initial_path, initial_image)
     stages.append(_stage_asset_entry(method, "initial", initial_path, initial_details))
@@ -489,6 +554,11 @@ def _render_method_stages(
         - merged_details["segment_count"]
         / max(initial_details["segment_count"], 1)
     )
+    merged_image = compose_depth_segmentation(
+        depth_color,
+        _draw_badge(merged_image, "Merged segments"),
+    )
+    merged_details["depth"] = depth_details
     merged_path = prefix / f"frame_{local_frame:04d}_{method}_merged.webp"
     _write_webp(assets_dir.parent / merged_path, merged_image)
     stages.append(_stage_asset_entry(method, "merged", merged_path, merged_details))
@@ -538,11 +608,13 @@ def _build_html(manifest):
     row_html = []
     for row_index, row in enumerate(manifest["rows"]):
         stage_html = []
-        for stage_index, stage in enumerate(row["stages"]):
+        for stage in row["stages"]:
             title = html.escape(stage["title"])
             asset = html.escape(stage["asset"])
+            stage_name = html.escape(stage["stage"], quote=True)
             stage_html.append(
-                f'<button class="stage-card" data-row="{row_index}" data-stage="{stage_index}" '
+                f'<button class="stage-card" data-row="{row_index}" '
+                f'data-stage-name="{stage_name}" '
                 f'type="button"><img loading="lazy" src="{asset}" alt="{title}">'
                 f'<span>{title}</span></button>'
             )
@@ -588,13 +660,20 @@ def _build_html(manifest):
     .stage-card {{ display: block; min-width: 0; padding: 4px; text-align: left; color: inherit; background: #f8fafb; border: 1px solid #cbd3d9; border-radius: 4px; cursor: zoom-in; }}
     .stage-card img {{ display: block; width: 100%; aspect-ratio: 3 / 2; object-fit: contain; background: #18212a; }}
     .stage-card span {{ display: block; padding: 5px 2px 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }}
-    dialog {{ width: min(1180px, 94vw); max-height: 92vh; padding: 0; border: 1px solid #7f8b95; border-radius: 6px; }}
+    dialog {{ width: min(1680px, 96vw); max-height: 94vh; padding: 0; border: 1px solid #7f8b95; border-radius: 6px; }}
     dialog::backdrop {{ background: rgba(0, 0, 0, .72); }}
     .modal-head {{ display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border-bottom: 1px solid #d5dbe0; }}
     .modal-body {{ padding: 12px; overflow: auto; max-height: 82vh; }}
-    .modal-body img {{ display: block; max-width: 100%; margin: 0 auto 12px; background: #18212a; }}
+    .modal-compare {{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }}
+    .modal-panel {{ min-width: 0; }}
+    .modal-panel h2 {{ margin: 0 0 8px; font-size: 15px; }}
+    .modal-panel img {{ display: block; width: 100%; max-height: 62vh; object-fit: contain; margin: 0 auto 10px; background: #18212a; }}
     pre {{ white-space: pre-wrap; word-break: break-word; padding: 10px; background: #f2f5f7; font-size: 12px; }}
     button.close {{ border: 1px solid #aeb8c1; background: #fff; border-radius: 4px; padding: 4px 9px; cursor: pointer; }}
+    @media (max-width: 760px) {{
+      .modal-compare {{ grid-template-columns: 1fr; }}
+      .modal-panel img {{ max-height: none; }}
+    }}
   </style>
 </head>
 <body>
@@ -609,7 +688,20 @@ def _build_html(manifest):
   <main>{''.join(row_html)}</main>
   <dialog id="detail-modal">
     <div class="modal-head"><b id="modal-title"></b><button class="close" type="button">关闭</button></div>
-    <div class="modal-body"><img id="modal-image" alt=""><pre id="modal-details"></pre></div>
+    <div class="modal-body">
+      <div class="modal-compare">
+        <section class="modal-panel">
+          <h2>BASELINE / DEPTH</h2>
+          <img id="modal-depth-image" alt="Baseline depth stage">
+          <pre id="modal-depth-details"></pre>
+        </section>
+        <section class="modal-panel">
+          <h2>GEOMETRY</h2>
+          <img id="modal-geometry-image" alt="Geometry stage">
+          <pre id="modal-geometry-details"></pre>
+        </section>
+      </div>
+    </div>
   </dialog>
   <script id="pipeline-data" type="application/json">{manifest_json}</script>
   <script>
@@ -618,10 +710,15 @@ def _build_html(manifest):
     document.querySelectorAll('.stage-card').forEach((card) => {{
       card.addEventListener('click', () => {{
         const row = report.rows[Number(card.dataset.row)];
-        const stage = row.stages[Number(card.dataset.stage)];
-        document.getElementById('modal-title').textContent = `${{stage.method}} · ${{stage.title}} · G${{row.global_frame}}`;
-        document.getElementById('modal-image').src = stage.asset;
-        document.getElementById('modal-details').textContent = JSON.stringify(stage.details, null, 2);
+        const stageName = card.dataset.stageName;
+        const depthStage = row.stages.find((candidate) => candidate.method === 'depth' && candidate.stage === stageName);
+        const geometryStage = row.stages.find((candidate) => candidate.method === 'geometry' && candidate.stage === stageName);
+        if (!depthStage || !geometryStage) return;
+        document.getElementById('modal-title').textContent = `${{depthStage.title}} · G${{row.global_frame}}`;
+        document.getElementById('modal-depth-image').src = depthStage.asset;
+        document.getElementById('modal-geometry-image').src = geometryStage.asset;
+        document.getElementById('modal-depth-details').textContent = JSON.stringify(depthStage.details, null, 2);
+        document.getElementById('modal-geometry-details').textContent = JSON.stringify(geometryStage.details, null, 2);
         modal.showModal();
       }});
     }});
@@ -649,6 +746,12 @@ def build_report(
     geometry = _load_pipeline_run(geometry_debug_dir)
     validate_comparable_runs(baseline["metadata"], geometry["metadata"])
     metadata = baseline["metadata"]
+    if baseline["metadata"].get("schema_version") != 2 or geometry["metadata"].get(
+        "schema_version"
+    ) != 2:
+        raise ValueError(
+            "Pipeline trace v2 with segmentation_depths is required; rerun both methods."
+        )
     if sample_interval is not None and sample_interval != metadata["sample_interval"]:
         raise ValueError(
             f"Mismatched sample_interval: CLI={sample_interval} metadata={metadata['sample_interval']}"
@@ -671,6 +774,16 @@ def build_report(
             raise ValueError("Baseline and geometry window numbers differ")
         base_arrays = baseline_window["arrays"]
         geom_arrays = geometry_window["arrays"]
+        for arrays in (base_arrays, geom_arrays):
+            if "segmentation_depths" not in arrays:
+                raise ValueError(
+                    "Pipeline trace v2 with segmentation_depths is required; "
+                    "rerun both methods."
+                )
+            if arrays["segmentation_depths"].shape != arrays["merged_labels"].shape:
+                raise ValueError(
+                    f"segmentation_depths shape differs from labels for {baseline_window['name']}"
+                )
         np.testing.assert_array_equal(
             base_arrays["global_frame_indices"],
             geom_arrays["global_frame_indices"],
@@ -705,6 +818,11 @@ def build_report(
                         interpolation=cv2.INTER_AREA,
                     )
 
+            shared_depth_range = compute_shared_depth_range(
+                base_arrays["segmentation_depths"][local_frame],
+                geom_arrays["segmentation_depths"][local_frame],
+            )
+
             depth_stages = _render_method_stages(
                 method="depth",
                 window_index=window_index,
@@ -715,6 +833,7 @@ def build_report(
                 previous_window_arrays=previous_base,
                 overlap=metadata["overlap"],
                 assets_dir=assets_dir,
+                shared_depth_range=shared_depth_range,
             )
             geometry_stages = _render_method_stages(
                 method="geometry",
@@ -726,6 +845,7 @@ def build_report(
                 previous_window_arrays=previous_geom,
                 overlap=metadata["overlap"],
                 assets_dir=assets_dir,
+                shared_depth_range=shared_depth_range,
             )
             stages = depth_stages + geometry_stages
             if [(item["method"], item["stage"]) for item in stages] != list(STAGE_ORDER):

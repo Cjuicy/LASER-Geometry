@@ -133,6 +133,11 @@ and scale-anchor settings. `--top_conf_percentile 0.3` means the run requests
 the highest-confidence 30%; the report also shows the actual retained pixel
 ratio after quantile ties.
 
+The report requires pipeline trace schema v2. V2 records the exact depth map
+used to build each segmentation graph, after coarse Sim3 alignment and before
+segment-scale refinement. Existing v1 traces must be regenerated; the report
+intentionally rejects them instead of substituting the final Viser depth.
+
 The following KITTI 08 example records every processed frame:
 
 ```bash
@@ -180,6 +185,12 @@ python eval/build_alignment_pipeline_report.py \
   --sample_interval 10 \
   --out_dir outputs/pipeline_report/kitti08_s10
 ```
+
+Each row still contains ten stage cards: five for Baseline/Depth and five for
+Geometry. The initial-segmentation and merged-segmentation cards show the input
+depth heatmap beside the segmentation result. Both methods use the same p02-p98
+depth color range for that frame. Clicking any card opens the matching Depth
+and Geometry stage together for direct comparison.
 
 `--sample_interval` on the report command is only a consistency check; the
 recorded runtime metadata remains authoritative. The default report contains

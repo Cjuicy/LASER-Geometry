@@ -7,6 +7,9 @@ import pytest
 
 from eval.build_alignment_pipeline_report import (
     build_report,
+    colorize_depth,
+    compose_depth_segmentation,
+    compute_shared_depth_range,
     render_confidence_stage,
     render_overlap_stage,
     render_propagation_stage,
@@ -89,9 +92,40 @@ def test_propagation_stage_reports_a_p_i_roles():
     assert {item["role"] for item in details["segments"]} == {"A", "P", "I"}
 
 
+def test_depth_color_is_shared_between_methods():
+    baseline = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+    geometry = np.array([[1.0, 2.0], [30.0, 40.0]], dtype=np.float32)
+    display_range = compute_shared_depth_range(baseline, geometry)
+
+    baseline_color, _ = colorize_depth(baseline, display_range)
+    geometry_color, _ = colorize_depth(geometry, display_range)
+
+    np.testing.assert_array_equal(baseline_color[0, 1], geometry_color[0, 1])
+
+
+def test_depth_segmentation_composite_doubles_width():
+    depth_color = np.zeros((8, 12, 3), dtype=np.uint8)
+    segmentation = np.ones((8, 12, 3), dtype=np.uint8)
+
+    composite = compose_depth_segmentation(depth_color, segmentation)
+
+    assert composite.shape == (8, 24, 3)
+
+
+def test_shared_depth_range_ignores_non_finite_values():
+    baseline = np.array([[1.0, np.nan]], dtype=np.float32)
+    geometry = np.array([[3.0, np.inf]], dtype=np.float32)
+
+    lo, hi = compute_shared_depth_range(baseline, geometry)
+
+    assert np.isfinite(lo)
+    assert np.isfinite(hi)
+    assert 1.0 <= lo < hi <= 3.0
+
+
 def _metadata(segment_mode):
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "segment_mode": segment_mode,
         "normal_method": "cross",
         "scale_anchor_mode": "depth_irls",
@@ -110,6 +144,14 @@ def _write_window(path, window_index, global_indices, with_alignment):
     if path.parent.parent.name == "geometry":
         initial[:, :2, :2] = 2
     merged = np.stack([_labels(), _labels()], axis=0).astype(np.uint16)
+    depth_offset = 0.25 if path.parent.parent.name == "geometry" else 0.0
+    segmentation_depths = np.stack(
+        [
+            np.linspace(1.0 + depth_offset, 5.0 + depth_offset, 96, dtype=np.float32).reshape(8, 12),
+            np.linspace(2.0 + depth_offset, 6.0 + depth_offset, 96, dtype=np.float32).reshape(8, 12),
+        ],
+        axis=0,
+    )
     if with_alignment:
         mutual = np.ones((1, 8, 12), dtype=bool)
         match_frame = np.array([0], dtype=np.int32)
@@ -139,6 +181,7 @@ def _write_window(path, window_index, global_indices, with_alignment):
         path,
         global_frame_indices=np.asarray(global_indices, dtype=np.int32),
         confidence_thresholds=np.array([0.6, 0.65], dtype=np.float32),
+        segmentation_depths=segmentation_depths,
         high_confidence_masks=np.ones((2, 8, 12), dtype=bool),
         initial_labels=initial,
         merged_labels=merged,
@@ -196,6 +239,19 @@ def test_report_rejects_mismatched_confidence_fraction(tmp_path):
         build_report(baseline, geometry, _write_images(tmp_path), tmp_path / "report")
 
 
+def test_report_rejects_v1_trace_without_segmentation_depth(tmp_path):
+    baseline = _write_run(tmp_path, "depth", "depth")
+    geometry = _write_run(tmp_path, "geometry", "geometry")
+    for root in (baseline, geometry):
+        path = root / "pipeline" / "meta.json"
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+        metadata["schema_version"] = 1
+        path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Pipeline trace v2.*rerun"):
+        build_report(baseline, geometry, _write_images(tmp_path), tmp_path / "report")
+
+
 def test_report_writes_ten_assets_per_row_and_single_entry_html(tmp_path):
     baseline = _write_run(tmp_path, "depth", "depth")
     geometry = _write_run(tmp_path, "geometry", "geometry")
@@ -209,6 +265,22 @@ def test_report_writes_ten_assets_per_row_and_single_entry_html(tmp_path):
     html = (out_dir / "index.html").read_text(encoding="utf-8")
     assert 'loading="lazy"' in html
     assert 'class="pipeline-row"' in html
+    assert 'data-stage-name=' in html
+    assert 'id="modal-depth-image"' in html
+    assert 'id="modal-geometry-image"' in html
+    assert 'id="modal-depth-details"' in html
+    assert 'id="modal-geometry-details"' in html
+    assert "candidate.method === 'depth'" in html
+    assert "candidate.method === 'geometry'" in html
+    assert "candidate.stage === stageName" in html
+    assert "@media (max-width: 760px)" in html
     for row in manifest["rows"]:
         for stage in row["stages"]:
             assert (out_dir / stage["asset"]).is_file()
+
+    first_row = manifest["rows"][0]
+    confidence = cv2.imread(str(out_dir / first_row["stages"][0]["asset"]))
+    initial = cv2.imread(str(out_dir / first_row["stages"][1]["asset"]))
+    merged = cv2.imread(str(out_dir / first_row["stages"][2]["asset"]))
+    assert initial.shape[1] == confidence.shape[1] * 2
+    assert merged.shape[1] == confidence.shape[1] * 2
