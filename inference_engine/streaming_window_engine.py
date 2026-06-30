@@ -211,7 +211,7 @@ class StreamingWindowEngine(VanillaEngine):
             window_index=window_index,
             payload=payload,
             metadata={
-                "schema_version": 1,
+                "schema_version": 2,
                 "segment_mode": self.segment_mode,
                 "normal_method": self.normal_method,
                 "scale_anchor_mode": self.scale_anchor_mode,

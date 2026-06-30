@@ -175,6 +175,49 @@ def test_geometry_graph_builder_collects_initial_and_merged_stages(monkeypatch):
     np.testing.assert_allclose(trace["confidence_thresholds"], [0.6])
 
 
+def test_depth_graph_trace_copies_float32_segmentation_depth(monkeypatch):
+    depth = np.arange(8, dtype=np.float64).reshape(2, 2, 2)
+    stages = [
+        SegmentationStages(
+            np.zeros((2, 2), dtype=np.intp),
+            np.zeros((2, 2), dtype=np.intp),
+            0.7,
+            np.ones((2, 2), dtype=bool),
+        )
+        for _ in range(2)
+    ]
+    monkeypatch.setattr(lsa, "ordered_batch_apply", lambda *args, **kwargs: stages)
+    monkeypatch.setattr(lsa, "match_segmentation_seq", lambda labels, iou_thresh: labels)
+    trace = {}
+
+    lsa.build_depth_sp_graph(depth, segmentation_trace=trace)
+    depth[:] = -1
+
+    assert trace["segmentation_depths"].dtype == np.float32
+    np.testing.assert_array_equal(
+        trace["segmentation_depths"],
+        np.arange(8, dtype=np.float32).reshape(2, 2, 2),
+    )
+
+
+def test_geometry_graph_trace_copies_float32_segmentation_depth(monkeypatch):
+    depth = np.arange(4, dtype=np.float64).reshape(1, 2, 2)
+    stage = SegmentationStages(
+        np.zeros((2, 2), dtype=np.intp),
+        np.zeros((2, 2), dtype=np.intp),
+        0.7,
+        np.ones((2, 2), dtype=bool),
+    )
+    monkeypatch.setattr(lsa, "ordered_batch_apply", lambda *args, **kwargs: [stage])
+    monkeypatch.setattr(lsa, "match_segmentation_seq", lambda labels, iou_thresh: labels)
+    trace = {}
+
+    lsa.build_geometry_sp_graph(depth, segmentation_trace=trace)
+
+    assert trace["segmentation_depths"].dtype == np.float32
+    np.testing.assert_array_equal(trace["segmentation_depths"], depth.astype(np.float32))
+
+
 def test_refine_segment_scales_is_mode_neutral_name(monkeypatch):
     calls = {}
 

@@ -221,6 +221,7 @@ def build_depth_sp_graph(
         )
         labels = np.stack([stage.merged_labels for stage in stages], axis=0)
         segmentation_trace.update(
+            segmentation_depths=np.asarray(depth, dtype=np.float32).copy(),
             initial_labels=np.stack([stage.initial_labels for stage in stages], axis=0),
             merged_labels=labels,
             confidence_thresholds=np.asarray(
@@ -268,6 +269,7 @@ def build_geometry_sp_graph(
         )
         labels = np.stack([stage.merged_labels for stage in stages], axis=0)
         segmentation_trace.update(
+            segmentation_depths=np.asarray(depth, dtype=np.float32).copy(),
             initial_labels=np.stack([stage.initial_labels for stage in stages], axis=0),
             merged_labels=labels,
             confidence_thresholds=np.asarray(

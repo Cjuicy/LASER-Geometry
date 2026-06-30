@@ -186,6 +186,7 @@ def test_streaming_engine_records_pipeline_window_metadata(tmp_path):
         top_conf_percentile=0.3,
     )
     segmentation_trace = {
+        "segmentation_depths": np.arange(8, dtype=np.float32).reshape(2, 2, 2),
         "initial_labels": np.zeros((2, 2, 2), dtype=np.intp),
         "merged_labels": np.zeros((2, 2, 2), dtype=np.intp),
         "confidence_thresholds": np.array([0.4, 0.5], dtype=np.float32),
@@ -212,12 +213,18 @@ def test_streaming_engine_records_pipeline_window_metadata(tmp_path):
         assert arrays["global_frame_indices"].tolist() == [1, 2]
         assert arrays["mutual_confidence_masks"].shape == (1, 2, 2)
         assert arrays["segment_role"].tolist() == [0, 1]
+        assert arrays["segmentation_depths"].dtype == np.float32
+        np.testing.assert_array_equal(
+            arrays["segmentation_depths"],
+            np.arange(8, dtype=np.float32).reshape(2, 2, 2),
+        )
     metadata = __import__("json").loads(
         (pipeline_dir / "meta.json").read_text(encoding="utf-8")
     )
     assert metadata["confidence_retained_fraction"] == 0.3
     assert metadata["confidence_quantile"] == 0.7
     assert metadata["sample_interval"] == 10
+    assert metadata["schema_version"] == 2
 
 
 def test_streaming_engine_rejects_invalid_confidence_retention(tmp_path):
