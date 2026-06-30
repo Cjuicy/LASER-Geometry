@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from eval.build_alignment_pipeline_report import (
+    build_playback_manifest,
     build_report,
     colorize_depth,
     compose_depth_segmentation,
@@ -143,6 +144,67 @@ def test_playback_sequence_keeps_earliest_equal_preference():
     ]
 
     assert select_playback_row_indices(rows) == [0]
+
+
+def test_playback_manifest_contains_two_methods_and_two_stages():
+    row = {
+        "global_frame": 7,
+        "is_overlap": False,
+        "stages": [
+            {
+                "method": method,
+                "stage": stage,
+                "asset": f"{method}-{stage}.webp",
+                "details": {"segment_count": count},
+            }
+            for method, count in (("depth", 3), ("geometry", 8))
+            for stage in ("initial", "merged")
+        ],
+    }
+
+    playback = build_playback_manifest(
+        {"metadata": {"sample_interval": 10}, "rows": [row]}
+    )
+
+    assert playback["metadata"]["sample_interval"] == 10
+    assert playback["frames"][0]["global_frame"] == 7
+    assert playback["frames"][0]["stages"]["merged"]["depth"] == {
+        "asset": "depth-merged.webp",
+        "segment_count": 3,
+    }
+    assert (
+        playback["frames"][0]["stages"]["initial"]["geometry"][
+            "segment_count"
+        ]
+        == 8
+    )
+
+
+def test_playback_manifest_names_a_missing_stage():
+    row = {
+        "global_frame": 9,
+        "is_overlap": False,
+        "stages": [
+            {
+                "method": "depth",
+                "stage": stage,
+                "asset": f"depth-{stage}.webp",
+                "details": {"segment_count": 2},
+            }
+            for stage in ("initial", "merged")
+        ]
+        + [
+            {
+                "method": "geometry",
+                "stage": "initial",
+                "asset": "geometry-initial.webp",
+                "details": {"segment_count": 4},
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="geometry.*merged.*global frame 9"):
+        build_playback_manifest({"metadata": {}, "rows": [row]})
 
 
 def _metadata(segment_mode):

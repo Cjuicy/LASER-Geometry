@@ -49,6 +49,8 @@ STAGE_TITLES = {
     "overlap": "4 Overlap 锚点",
     "propagation": "5 窗口内传播",
 }
+PLAYBACK_METHODS = ("depth", "geometry")
+PLAYBACK_STAGES = ("initial", "merged")
 
 
 def _as_bool_mask(mask, shape):
@@ -616,6 +618,37 @@ def select_playback_row_indices(rows):
         if current["is_overlap"] and not row["is_overlap"]:
             selected[global_frame] = row_index
     return [selected[global_frame] for global_frame in sorted(selected)]
+
+
+def build_playback_manifest(manifest):
+    frames = []
+    for row_index in select_playback_row_indices(manifest["rows"]):
+        row = manifest["rows"][row_index]
+        lookup = {
+            (stage["method"], stage["stage"]): stage for stage in row["stages"]
+        }
+        stages = {}
+        for stage_name in PLAYBACK_STAGES:
+            stages[stage_name] = {}
+            for method in PLAYBACK_METHODS:
+                stage = lookup.get((method, stage_name))
+                if stage is None:
+                    raise ValueError(
+                        f"Missing {method} {stage_name} stage for "
+                        f"global frame {row['global_frame']}"
+                    )
+                stages[stage_name][method] = {
+                    "asset": stage["asset"],
+                    "segment_count": int(stage["details"]["segment_count"]),
+                }
+        frames.append(
+            {
+                "global_frame": int(row["global_frame"]),
+                "row_index": row_index,
+                "stages": stages,
+            }
+        )
+    return {"metadata": dict(manifest["metadata"]), "frames": frames}
 
 
 def _build_html(manifest):
