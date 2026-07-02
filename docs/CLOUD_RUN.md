@@ -184,7 +184,7 @@ python eval/quick_eval_local.py \
 After the run, inspect the metrics file and the output directories:
 
 ```bash
-cat outputs/eval/"$SCENE"/metrics.txt
+cat outputs/eval/"$SCENE"/"${SCENE}_metrics.txt"
 ls -la outputs/viser/"$SCENE"
 ls -la outputs/eval/"$SCENE"
 ```
