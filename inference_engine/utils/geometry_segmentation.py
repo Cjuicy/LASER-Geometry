@@ -294,6 +294,9 @@ def segment_geometry_felzenszwalb_rag_baseline_params_stages(
     top_conf_percentile=None,
     depth_merge_thresh=0.1,
     normal_thresh_deg=20.0,
+    seg_scale=300,
+    seg_sigma=1.1,
+    seg_min_size=500,
     normal_method="cross",
     batch_idx=None,
 ):
@@ -305,9 +308,9 @@ def segment_geometry_felzenszwalb_rag_baseline_params_stages(
         top_conf_percentile=top_conf_percentile,
         depth_merge_thresh=depth_merge_thresh,
         normal_thresh_deg=normal_thresh_deg,
-        seg_scale=300,
-        seg_sigma=1.1,
-        seg_min_size=500,
+        seg_scale=seg_scale,
+        seg_sigma=seg_sigma,
+        seg_min_size=seg_min_size,
         normal_method=normal_method,
         batch_idx=batch_idx,
     )
@@ -321,6 +324,9 @@ def segment_geometry_felzenszwalb_rag_baseline_params(
     top_conf_percentile=None,
     depth_merge_thresh=0.1,
     normal_thresh_deg=20.0,
+    seg_scale=300,
+    seg_sigma=1.1,
+    seg_min_size=500,
     normal_method="cross",
     batch_idx=None,
 ):
@@ -332,6 +338,9 @@ def segment_geometry_felzenszwalb_rag_baseline_params(
         top_conf_percentile=top_conf_percentile,
         depth_merge_thresh=depth_merge_thresh,
         normal_thresh_deg=normal_thresh_deg,
+        seg_scale=seg_scale,
+        seg_sigma=seg_sigma,
+        seg_min_size=seg_min_size,
         normal_method=normal_method,
         batch_idx=batch_idx,
     ).merged_labels

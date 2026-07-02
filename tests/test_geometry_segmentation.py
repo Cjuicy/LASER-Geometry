@@ -241,3 +241,44 @@ def test_geometry_baseline_params_labels_returns_delegated_merged_labels(monkeyp
     assert calls["seg_sigma"] == 1.1
     assert calls["seg_min_size"] == 500
     assert calls["normal_method"] == "sobel"
+
+
+def test_geometry_baseline_params_wrappers_forward_parameter_overrides(monkeypatch):
+    calls = []
+    merged_labels = np.array([[1, 0]], dtype=np.intp)
+    stages = SimpleNamespace(merged_labels=merged_labels)
+
+    def fake_stages(depth_map, **kwargs):
+        calls.append((depth_map, kwargs))
+        return stages
+
+    monkeypatch.setattr(
+        geom_seg,
+        "segment_geometry_felzenszwalb_rag_stages",
+        fake_stages,
+    )
+
+    depth = np.ones((2, 2), dtype=np.float32)
+    overrides = {
+        "seg_scale": 120,
+        "seg_sigma": 0.7,
+        "seg_min_size": 80,
+    }
+
+    stages_result = geom_seg.segment_geometry_felzenszwalb_rag_baseline_params_stages(
+        depth,
+        **overrides,
+    )
+    labels_result = geom_seg.segment_geometry_felzenszwalb_rag_baseline_params(
+        depth,
+        **overrides,
+    )
+
+    assert stages_result is stages
+    assert labels_result is merged_labels
+    assert len(calls) == 2
+    for delegated_depth, delegated_kwargs in calls:
+        assert delegated_depth is depth
+        assert delegated_kwargs["seg_scale"] == 120
+        assert delegated_kwargs["seg_sigma"] == 0.7
+        assert delegated_kwargs["seg_min_size"] == 80
