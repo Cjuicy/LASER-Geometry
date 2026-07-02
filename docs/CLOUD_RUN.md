@@ -126,6 +126,69 @@ python eval/quick_eval_local.py \
   --seq kitti09_geometry_s10
 ```
 
+## Geometry A1 Baseline-Parameter Experiment
+
+This is the non-LC, non-debug KITTI 00 `s1-w75-o30` run for the Geometry A1
+baseline-parameter check. The only variable changed versus legacy Geometry is
+the Felzenszwalb setting: `200/1.0/300` becomes `300/1.1/500`.
+
+```bash
+cd ~/autodl-tmp/LASER-Geometry-main
+conda activate vggt
+
+SCENE=kitti00_pi3_geometry_a1_parammatch_s1_w75_o30
+
+python demo.py \
+  --model_ckpt weights/model.safetensors \
+  --data_path data/00/image_2 \
+  --scene_name "$SCENE" \
+  --output_path outputs/viser \
+  --cache_path cache/"$SCENE" \
+  --sample_interval 1 \
+  --window_size 75 \
+  --overlap 30 \
+  --top_conf_percentile 0.3 \
+  --depth_refine \
+  --segment_mode geometry \
+  --geometry_seg_profile baseline_params \
+  --normal_method cross \
+  --scale_anchor_mode depth_irls
+```
+
+Do not pass `--debug_alignment` here. This run only needs the normal Viser
+output plus the later evaluation output.
+
+If KITTI ground truth is stored at `data/poses/00.txt`, use that file. If not,
+fall back to `data/dataset/poses/00.txt`. Fail clearly if neither path exists.
+
+```bash
+if [ -f data/poses/00.txt ]; then
+  GT=data/poses/00.txt
+elif [ -f data/dataset/poses/00.txt ]; then
+  GT=data/dataset/poses/00.txt
+else
+  echo "Missing KITTI GT: expected data/poses/00.txt or data/dataset/poses/00.txt" >&2
+  exit 1
+fi
+
+python eval/quick_eval_local.py \
+  --pred outputs/viser/"$SCENE"/pred_traj.txt \
+  --gt "$GT" \
+  --pred_format tum \
+  --gt_format kitti \
+  --gt_stride 1 \
+  --out_dir outputs/eval/"$SCENE" \
+  --seq "$SCENE"
+```
+
+After the run, inspect the metrics file and the output directories:
+
+```bash
+cat outputs/eval/"$SCENE"/metrics.txt
+ls -la outputs/viser/"$SCENE"
+ls -la outputs/eval/"$SCENE"
+```
+
 ## Depth vs Geometry Pipeline Report
 
 Run both methods with exactly the same sampling, window, overlap, confidence,
