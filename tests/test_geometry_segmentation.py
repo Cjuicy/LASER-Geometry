@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import numpy as np
 
 from inference_engine.utils import depth as depth_module
@@ -162,3 +164,80 @@ def test_geometry_segmentation_selects_batched_auxiliary_inputs(monkeypatch):
     np.testing.assert_array_equal(calls["intrinsic"], intrinsic[1])
     assert calls["normal_method"] == "sobel"
     assert calls["felzenszwalb_image_shape"] == (2, 2, 4)
+
+
+def test_geometry_baseline_params_stages_delegates_with_baseline_parameters(monkeypatch):
+    calls = {}
+    stages = SimpleNamespace(merged_labels=np.array([[0, 1]], dtype=np.intp))
+
+    def fake_stages(depth_map, **kwargs):
+        calls["depth_map"] = depth_map
+        calls.update(kwargs)
+        return stages
+
+    monkeypatch.setattr(
+        geom_seg,
+        "segment_geometry_felzenszwalb_rag_stages",
+        fake_stages,
+    )
+
+    depth = np.ones((2, 2), dtype=np.float32)
+    conf = np.full((2, 2), 0.8, dtype=np.float32)
+    intrinsic = np.eye(3, dtype=np.float32)
+    point_map = np.zeros((2, 2, 3), dtype=np.float32)
+
+    result = geom_seg.segment_geometry_felzenszwalb_rag_baseline_params_stages(
+        depth,
+        conf_map=conf,
+        intrinsic=intrinsic,
+        point_map=point_map,
+        top_conf_percentile=0.4,
+        depth_merge_thresh=0.2,
+        normal_thresh_deg=15.0,
+        normal_method="sobel",
+        batch_idx=1,
+    )
+
+    assert result is stages
+    assert calls["depth_map"] is depth
+    assert calls["conf_map"] is conf
+    assert calls["intrinsic"] is intrinsic
+    assert calls["point_map"] is point_map
+    assert calls["top_conf_percentile"] == 0.4
+    assert calls["depth_merge_thresh"] == 0.2
+    assert calls["normal_thresh_deg"] == 15.0
+    assert calls["seg_scale"] == 300
+    assert calls["seg_sigma"] == 1.1
+    assert calls["seg_min_size"] == 500
+    assert calls["normal_method"] == "sobel"
+    assert calls["batch_idx"] == 1
+
+
+def test_geometry_baseline_params_labels_returns_delegated_merged_labels(monkeypatch):
+    calls = {}
+    merged_labels = np.array([[1, 0]], dtype=np.intp)
+    stages = SimpleNamespace(merged_labels=merged_labels)
+
+    def fake_stages(depth_map, **kwargs):
+        calls["depth_map"] = depth_map
+        calls.update(kwargs)
+        return stages
+
+    monkeypatch.setattr(
+        geom_seg,
+        "segment_geometry_felzenszwalb_rag_stages",
+        fake_stages,
+    )
+
+    depth = np.ones((2, 2), dtype=np.float32)
+    result = geom_seg.segment_geometry_felzenszwalb_rag_baseline_params(
+        depth,
+        normal_method="sobel",
+    )
+
+    assert result is merged_labels
+    assert calls["depth_map"] is depth
+    assert calls["seg_scale"] == 300
+    assert calls["seg_sigma"] == 1.1
+    assert calls["seg_min_size"] == 500
+    assert calls["normal_method"] == "sobel"

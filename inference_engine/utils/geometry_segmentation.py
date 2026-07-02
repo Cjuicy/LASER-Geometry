@@ -284,3 +284,54 @@ def segment_geometry_felzenszwalb_rag(
         normal_method=normal_method,
         batch_idx=batch_idx,
     ).merged_labels
+
+
+def segment_geometry_felzenszwalb_rag_baseline_params_stages(
+    depth_map,
+    conf_map=None,
+    intrinsic=None,
+    point_map=None,
+    top_conf_percentile=None,
+    depth_merge_thresh=0.1,
+    normal_thresh_deg=20.0,
+    normal_method="cross",
+    batch_idx=None,
+):
+    return segment_geometry_felzenszwalb_rag_stages(
+        depth_map,
+        conf_map=conf_map,
+        intrinsic=intrinsic,
+        point_map=point_map,
+        top_conf_percentile=top_conf_percentile,
+        depth_merge_thresh=depth_merge_thresh,
+        normal_thresh_deg=normal_thresh_deg,
+        seg_scale=300,
+        seg_sigma=1.1,
+        seg_min_size=500,
+        normal_method=normal_method,
+        batch_idx=batch_idx,
+    )
+
+
+def segment_geometry_felzenszwalb_rag_baseline_params(
+    depth_map,
+    conf_map=None,
+    intrinsic=None,
+    point_map=None,
+    top_conf_percentile=None,
+    depth_merge_thresh=0.1,
+    normal_thresh_deg=20.0,
+    normal_method="cross",
+    batch_idx=None,
+):
+    return segment_geometry_felzenszwalb_rag_baseline_params_stages(
+        depth_map,
+        conf_map=conf_map,
+        intrinsic=intrinsic,
+        point_map=point_map,
+        top_conf_percentile=top_conf_percentile,
+        depth_merge_thresh=depth_merge_thresh,
+        normal_thresh_deg=normal_thresh_deg,
+        normal_method=normal_method,
+        batch_idx=batch_idx,
+    ).merged_labels
