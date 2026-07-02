@@ -18,6 +18,8 @@ from .depth import (
 )
 from .geometry_segmentation import (
     segment_geometry_felzenszwalb_rag,
+    segment_geometry_felzenszwalb_rag_baseline_params,
+    segment_geometry_felzenszwalb_rag_baseline_params_stages,
     segment_geometry_felzenszwalb_rag_stages,
 )
 from .scale_anchor import assign_overlap_window_depth_scale
@@ -25,6 +27,19 @@ from .segment_graph import match_segmentation_seq
 
 # batched_image_op_wrapper 用在 depth segmentation 分支里，负责对一个 batch/序列里的多帧逐帧执行图像操作。
 from .batch_threading import batched_image_op_wrapper, ordered_batch_apply
+
+
+_GEOMETRY_SEGMENTATION_PROFILES = {
+    "legacy": (
+        segment_geometry_felzenszwalb_rag,
+        segment_geometry_felzenszwalb_rag_stages,
+    ),
+    "baseline_params": (
+        segment_geometry_felzenszwalb_rag_baseline_params,
+        segment_geometry_felzenszwalb_rag_baseline_params_stages,
+    ),
+}
+
 
 # 1️⃣ 外部调用 segment-level scale refinement 的入口函数
 def refine_segment_scales(
@@ -246,7 +261,17 @@ def build_geometry_sp_graph(
     intrinsic=None,
     normal_method="cross",
     segmentation_trace=None,
+    geometry_seg_profile="legacy",
 ):
+    try:
+        segmentation_op, segmentation_stages_op = _GEOMETRY_SEGMENTATION_PROFILES[
+            geometry_seg_profile
+        ]
+    except KeyError:
+        raise ValueError(
+            f"unknown geometry segmentation profile: {geometry_seg_profile!r}"
+        ) from None
+
     op_kwargs = {
         "depth_merge_thresh": depth_merge_thresh,
         "conf_map": conf_map,
@@ -258,13 +283,13 @@ def build_geometry_sp_graph(
     if segmentation_trace is None:
         labels = batched_image_op_wrapper(
             depth,
-            segment_geometry_felzenszwalb_rag,
+            segmentation_op,
             **op_kwargs,
         )
     else:
         stages = ordered_batch_apply(
             depth,
-            segment_geometry_felzenszwalb_rag_stages,
+            segmentation_stages_op,
             **op_kwargs,
         )
         labels = np.stack([stage.merged_labels for stage in stages], axis=0)

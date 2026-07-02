@@ -1,6 +1,7 @@
 import inspect
 
 import numpy as np
+import pytest
 import torch
 
 from pi3.utils.graph import Vertex
@@ -122,6 +123,80 @@ def test_geometry_graph_builder_uses_geometry_segmentation_inputs(monkeypatch):
     np.testing.assert_array_equal(calls["kwargs"]["intrinsic"], intrinsic)
     np.testing.assert_array_equal(calls["labels"], labels)
     assert calls["iou_thresh"] == 0.44
+
+
+def test_geometry_graph_builder_routes_legacy_profile(monkeypatch):
+    calls = {}
+    labels = np.zeros((1, 2, 2), dtype=np.intp)
+
+    def fake_batched_image_op_wrapper(depth, op, **kwargs):
+        calls["op"] = op
+        return labels
+
+    monkeypatch.setattr(lsa, "batched_image_op_wrapper", fake_batched_image_op_wrapper)
+    monkeypatch.setattr(lsa, "match_segmentation_seq", lambda labels, iou_thresh: labels)
+
+    lsa.build_geometry_sp_graph(
+        np.ones((1, 2, 2), dtype=np.float32),
+        geometry_seg_profile="legacy",
+    )
+
+    assert calls["op"] is lsa.segment_geometry_felzenszwalb_rag
+
+
+def test_geometry_graph_builder_routes_baseline_params_profile(monkeypatch):
+    calls = {}
+    labels = np.zeros((1, 2, 2), dtype=np.intp)
+
+    def fake_batched_image_op_wrapper(depth, op, **kwargs):
+        calls["op"] = op
+        return labels
+
+    monkeypatch.setattr(lsa, "batched_image_op_wrapper", fake_batched_image_op_wrapper)
+    monkeypatch.setattr(lsa, "match_segmentation_seq", lambda labels, iou_thresh: labels)
+
+    lsa.build_geometry_sp_graph(
+        np.ones((1, 2, 2), dtype=np.float32),
+        geometry_seg_profile="baseline_params",
+    )
+
+    assert calls["op"] is lsa.segment_geometry_felzenszwalb_rag_baseline_params
+
+
+def test_geometry_graph_builder_routes_baseline_params_trace_stages(monkeypatch):
+    calls = {}
+    merged = np.zeros((2, 2), dtype=np.intp)
+    stages = [
+        SegmentationStages(
+            merged,
+            merged,
+            0.7,
+            np.ones((2, 2), dtype=bool),
+        )
+    ]
+
+    def fake_ordered_batch_apply(depth, op, **kwargs):
+        calls["op"] = op
+        return stages
+
+    monkeypatch.setattr(lsa, "ordered_batch_apply", fake_ordered_batch_apply)
+    monkeypatch.setattr(lsa, "match_segmentation_seq", lambda labels, iou_thresh: labels)
+
+    lsa.build_geometry_sp_graph(
+        np.ones((1, 2, 2), dtype=np.float32),
+        segmentation_trace={},
+        geometry_seg_profile="baseline_params",
+    )
+
+    assert calls["op"] is lsa.segment_geometry_felzenszwalb_rag_baseline_params_stages
+
+
+def test_geometry_graph_builder_rejects_unknown_profile():
+    with pytest.raises(ValueError, match="unknown"):
+        lsa.build_geometry_sp_graph(
+            np.ones((1, 2, 2), dtype=np.float32),
+            geometry_seg_profile="unknown",
+        )
 
 
 def test_depth_graph_builder_collects_initial_and_merged_stages(monkeypatch):
