@@ -23,6 +23,8 @@ def test_demo_exposes_optional_alignment_debug_flags():
     assert "--debug_alignment" in result.stdout
     assert "--debug_alignment_path" in result.stdout
     assert "--top_conf_percentile" in result.stdout
+    assert "--geometry_seg_profile" in result.stdout
+    assert "baseline_params" in result.stdout
 
 
 def test_demo_passes_sample_interval_to_alignment_debug_metadata(monkeypatch):

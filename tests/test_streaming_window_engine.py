@@ -137,7 +137,7 @@ def test_depth_segment_graph_kwargs_stay_unchanged(monkeypatch, tmp_path):
         return "depth_graph"
 
     monkeypatch.setattr(swe_module, "build_depth_sp_graph", fake_build_depth_sp_graph)
-    engine = _engine(tmp_path)
+    engine = _engine(tmp_path, geometry_seg_profile="baseline_params")
 
     local_points = torch.tensor([[[[1.0, 2.0, 3.0]]]])
     conf = torch.ones(1, 1, 1)
