@@ -7,6 +7,9 @@ cache/
 inference_cache/
 viser_results/
 outputs/
+/data
+/weights
+/outputs
 geometry_debug/
 .DS_Store
 **/.DS_Store
