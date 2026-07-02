@@ -13,6 +13,7 @@ def _engine(
     segment_mode="depth",
     normal_method="cross",
     scale_anchor_mode="depth_irls",
+    geometry_seg_profile="legacy",
 ):
     return StreamingWindowEngine(
         torch.nn.Identity(),
@@ -27,6 +28,7 @@ def _engine(
         segment_mode=segment_mode,
         normal_method=normal_method,
         scale_anchor_mode=scale_anchor_mode,
+        geometry_seg_profile=geometry_seg_profile,
     )
 
 
@@ -96,12 +98,61 @@ def test_geometry_segment_graph_uses_geometry_inputs(monkeypatch, tmp_path):
         "point_map",
         "intrinsic",
         "normal_method",
+        "geometry_seg_profile",
     }
     np.testing.assert_array_equal(kwargs["conf_map"], conf.numpy())
     np.testing.assert_array_equal(kwargs["point_map"], local_points.numpy())
     np.testing.assert_array_equal(kwargs["intrinsic"], intrinsic.numpy())
     assert kwargs["top_conf_percentile"] == engine.top_conf_percentile
     assert kwargs["normal_method"] == "sobel"
+    assert kwargs["geometry_seg_profile"] == "legacy"
+
+
+def test_geometry_segment_graph_forwards_geometry_profile(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_build_geometry_sp_graph(depth, **kwargs):
+        calls.append((depth, kwargs))
+        return "geometry_graph"
+
+    monkeypatch.setattr(swe_module, "build_geometry_sp_graph", fake_build_geometry_sp_graph)
+    engine = _engine(tmp_path, segment_mode="geometry", geometry_seg_profile="baseline_params")
+
+    local_points = torch.tensor([[[[1.0, 2.0, 3.0]]]])
+    conf = torch.ones(1, 1, 1)
+    intrinsic = torch.eye(3)
+
+    engine._build_geometry_segment_graph(local_points, conf, intrinsic)
+
+    assert len(calls) == 1
+    _, kwargs = calls[0]
+    assert kwargs["geometry_seg_profile"] == "baseline_params"
+
+
+def test_depth_segment_graph_kwargs_stay_unchanged(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_build_depth_sp_graph(depth, **kwargs):
+        calls.append((depth, kwargs))
+        return "depth_graph"
+
+    monkeypatch.setattr(swe_module, "build_depth_sp_graph", fake_build_depth_sp_graph)
+    engine = _engine(tmp_path)
+
+    local_points = torch.tensor([[[[1.0, 2.0, 3.0]]]])
+    conf = torch.ones(1, 1, 1)
+
+    engine._build_depth_segment_graph(local_points, conf)
+
+    assert len(calls) == 1
+    _, kwargs = calls[0]
+    assert set(kwargs) == {"conf_map", "top_conf_percentile"}
+    assert "geometry_seg_profile" not in kwargs
+
+
+def test_streaming_engine_rejects_invalid_geometry_profile(tmp_path):
+    with pytest.raises(ValueError, match="geometry_seg_profile"):
+        _engine(tmp_path, geometry_seg_profile="nope")
 
 
 def test_streaming_engine_alignment_debug_is_default_off(tmp_path):

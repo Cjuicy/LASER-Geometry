@@ -56,6 +56,7 @@ class StreamingWindowEngine(VanillaEngine):
             segment_mode: str = 'depth',                # 分割方法
             normal_method: str = 'cross',               # 法线估计方法
             scale_anchor_mode: str = 'depth_irls',      # 尺度锚点估计方法
+            geometry_seg_profile: str = 'legacy',
             # 新增的更好的可视化内容的部分(记录功能的入口)
             debug_alignment: bool = False,              # 是否开启对齐调试记录（默认False）
             debug_alignment_path: str | None = None,    # 调试文件保存根目录
@@ -68,6 +69,8 @@ class StreamingWindowEngine(VanillaEngine):
             raise ValueError(f"Unknown segment_mode: {segment_mode}")
         if scale_anchor_mode not in ('depth_irls', 'conf_weighted_irls'):
             raise ValueError(f"Unknown scale_anchor_mode: {scale_anchor_mode}")
+        if geometry_seg_profile not in ('legacy', 'baseline_params'):
+            raise ValueError(f"Unknown geometry_seg_profile: {geometry_seg_profile}")
         if segment_mode == 'geometry' and not depth_refine:
             raise ValueError("segment_mode='geometry' only affects segment refinement; enable depth_refine.")
         if top_conf_percentile is None or not 0.0 < top_conf_percentile <= 1.0:
@@ -105,6 +108,10 @@ class StreamingWindowEngine(VanillaEngine):
         # 中文：scale_anchor_mode 控制 segment 对齐时的初始尺度锚点估计方式。
         # English: scale_anchor_mode controls how overlap segment scale anchors are estimated.
         self.scale_anchor_mode = scale_anchor_mode  # depth_irls：原始 LASER；conf_weighted_irls：M1 置信度加权实验
+
+        # 中文：geometry_seg_profile 控制 geometry 分割的参数档位。
+        # English: geometry_seg_profile controls the geometry segmentation parameter profile.
+        self.geometry_seg_profile = geometry_seg_profile
 
         self.debug_alignment = bool(debug_alignment)
         self.debug_sample_interval = int(debug_sample_interval)
@@ -175,6 +182,7 @@ class StreamingWindowEngine(VanillaEngine):
             "point_map": local_points_np,
             "intrinsic": ref_intrinsic.cpu().numpy() if hasattr(ref_intrinsic, "cpu") else ref_intrinsic,
             "normal_method": self.normal_method,
+            "geometry_seg_profile": self.geometry_seg_profile,
         }
         if segmentation_trace is not None:
             kwargs["segmentation_trace"] = segmentation_trace

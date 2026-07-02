@@ -68,6 +68,13 @@ def get_args_parser():
         help='segment scale anchor estimator: original depth_irls or M1 confidence-weighted IRLS'
     )
     parser.add_argument(
+        '--geometry_seg_profile',
+        default='legacy',
+        choices=['legacy', 'baseline_params'],
+        type=str,
+        help='geometry segmentation parameter profile'
+    )
+    parser.add_argument(
         '--debug_alignment',
         action='store_true',
         help='save optional alignment debug traces without changing normal outputs'
@@ -110,6 +117,7 @@ def load_model(args):
         segment_mode=args.segment_mode,
         normal_method=args.normal_method,
         scale_anchor_mode=args.scale_anchor_mode,
+        geometry_seg_profile=args.geometry_seg_profile,
         debug_alignment=args.debug_alignment,
         debug_alignment_path=args.debug_alignment_path,
         debug_alignment_scene=args.scene_name,

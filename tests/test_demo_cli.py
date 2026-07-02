@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 import torch
+import pytest
 
 import demo
 
@@ -52,3 +53,34 @@ def test_demo_passes_sample_interval_to_alignment_debug_metadata(monkeypatch):
     assert demo.load_model(args) == "engine"
     assert captured["debug_sample_interval"] == 7
     assert captured["top_conf_percentile"] == 0.4
+
+
+def test_demo_geometry_seg_profile_parser_and_loader(monkeypatch):
+    parser = demo.get_args_parser()
+    defaults = parser.parse_args(["--data_path", "images"])
+    assert defaults.geometry_seg_profile == "legacy"
+
+    accepted = parser.parse_args(
+        ["--data_path", "images", "--geometry_seg_profile", "baseline_params"]
+    )
+    assert accepted.geometry_seg_profile == "baseline_params"
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--data_path", "images", "--geometry_seg_profile", "invalid"])
+
+    captured = {}
+
+    class FakePi3:
+        @classmethod
+        def from_pretrained(cls, name):
+            return torch.nn.Identity()
+
+    def fake_engine(model, **kwargs):
+        captured.update(kwargs)
+        return "engine"
+
+    monkeypatch.setattr(demo, "Pi3", FakePi3)
+    monkeypatch.setattr(demo, "StreamingWindowEngine", fake_engine)
+    demo.load_model(accepted)
+
+    assert captured["geometry_seg_profile"] == "baseline_params"
